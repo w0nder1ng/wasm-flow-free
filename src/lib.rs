@@ -2,9 +2,9 @@ mod utils;
 use bitvec::prelude::*;
 use rand::{distributions::Distribution, seq::IteratorRandom, thread_rng, Rng};
 use std::{
-    cmp::{max, min},
+    cmp::min,
     collections::HashSet,
-    convert::TryInto,
+    convert::{TryFrom, TryInto},
     f32::consts::E,
     num::NonZeroUsize,
 };
@@ -22,30 +22,96 @@ extern "C" {
     #[wasm_bindgen(js_namespace = console)]
     fn log(s: &str);
 }
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 #[repr(u8)]
+pub enum FlowDir {
+    #[default]
+    Unconnected = 0b0000,
+    Left = 0b0001,
+    Right = 0b0010,
+    Up = 0b0100,
+    Down = 0b1000,
+    LeftRight = 0b0011,
+    UpDown = 0b1100,
+    LeftUp = 0b0101,
+    LeftDown = 0b1001,
+    RightUp = 0b0110,
+    RightDown = 0b1010,
+}
+
+impl FlowDir {
+    pub fn num_connections(self) -> usize {
+        (self as u8).count_ones() as usize
+    }
+    pub fn try_connect(self, other_direction: FlowDir) -> Result<Self, ()> {
+        if other_direction.num_connections() != 1 {
+            return Err(());
+        }
+        FlowDir::try_from((self as u8 | other_direction as u8) as u32)
+    }
+    pub fn remove_connection(self, other_direction: FlowDir) -> Self {
+        if other_direction.num_connections() != 1 {
+            return self;
+        }
+        FlowDir::try_from((self as u8 & !(other_direction as u8)) as u32).unwrap()
+    }
+    pub fn opposite_dir(self) -> Result<Self, ()> {
+        match self {
+            FlowDir::Left => Ok(FlowDir::Right),
+            FlowDir::Right => Ok(FlowDir::Left),
+            FlowDir::Up => Ok(FlowDir::Down),
+            FlowDir::Down => Ok(FlowDir::Up),
+            _ => Err(()),
+        }
+    }
+}
+impl TryFrom<u32> for FlowDir {
+    type Error = ();
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0b0000 => Ok(FlowDir::Unconnected),
+            0b0001 => Ok(FlowDir::Left),
+            0b0010 => Ok(FlowDir::Right),
+            0b0100 => Ok(FlowDir::Up),
+            0b1000 => Ok(FlowDir::Down),
+            0b0011 => Ok(FlowDir::LeftRight),
+            0b1100 => Ok(FlowDir::UpDown),
+            0b0101 => Ok(FlowDir::LeftUp),
+            0b1001 => Ok(FlowDir::LeftDown),
+            0b0110 => Ok(FlowDir::RightUp),
+            0b1010 => Ok(FlowDir::RightDown),
+            _ => Err(()),
+        }
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[repr(u8)]
+
 pub enum Flow {
     Dot = 2,
     Line = 1,
+    #[default]
     Empty = 0,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Fill {
     color: u16,
     flow: Flow,
-    dirs: [bool; 4],
+    dirs: FlowDir,
     // left, right, up, down
-    // if all true, then dot
 }
 
 impl Fill {
-    pub fn new(color: u16, flow: Flow, dirs: [bool; 4]) -> Self {
+    pub fn new(color: u16, flow: Flow, dirs: FlowDir) -> Self {
         Self { color, flow, dirs }
     }
 }
-
+// impl Default for Fill {
+//     fn default() -> Self {
+//         Fill::new(0x000, Default::default(), Default::default())
+//     }
+// }
 #[derive(Clone, Debug)]
 pub struct Board {
     pub width: i32,
@@ -69,7 +135,7 @@ fn softmax(ins: Vec<f32>) -> Vec<f32> {
 }
 impl Board {
     pub fn new(width: i32, height: i32) -> Self {
-        let fills = vec![Fill::new(0x000, Flow::Empty, [false; 4]); (width * height) as usize];
+        let fills = vec![Default::default(); (width * height) as usize];
         Self {
             width,
             height,
@@ -275,7 +341,7 @@ impl Board {
                                 true => Flow::Dot,
                                 false => Flow::Line,
                             },
-                            [false; 4],
+                            FlowDir::Unconnected,
                         ),
                     );
                 }
@@ -341,7 +407,7 @@ impl Board {
             }
             let this_fill = self.fills[entry as usize];
             for (i, &delta) in deltas.iter().enumerate() {
-                if this_fill.dirs[i] == false {
+                if (this_fill.dirs as u8) & (1 << i) == 0 {
                     continue;
                 }
                 let new_pos = entry + delta;
@@ -363,7 +429,9 @@ impl Board {
                 };
 
                 let their_pos = [1, 0, 3, 2][my_pos as usize]; // opposite of my_pos
-                if !(this_fill.dirs[my_pos] && self.fills[new_pos as usize].dirs[their_pos]) {
+                if (this_fill.dirs as u8) & (1 << my_pos) == 0
+                    && (self.fills[new_pos as usize].dirs as u8) & (1 << their_pos) == 0
+                {
                     continue;
                 }
 
@@ -389,7 +457,7 @@ impl Board {
 
         // dots should only have one connection, lines can have two, empty will have one
         for fill in [fill_a, fill_b] {
-            if fill.dirs.iter().filter(|b| **b).count()
+            if fill.dirs.num_connections()
                 >= match fill.flow {
                     Flow::Empty => 1,
                     Flow::Dot => 1,
@@ -401,27 +469,20 @@ impl Board {
         }
 
         let delta = pos_b - pos_a;
-        let my_pos = match delta {
-            -1 => 0,                        // left
-            1 => 1,                         // right
-            _ if delta == -self.width => 2, // up
-            _ if delta == self.width => 3,  // down
+        let my_change_direction = match delta {
+            -1 => FlowDir::Left,                       // left
+            1 => FlowDir::Right,                       // right
+            _ if delta == -self.width => FlowDir::Up,  // up
+            _ if delta == self.width => FlowDir::Down, // down
             _ => panic!("Invalid delta"),
         };
-        let their_pos = [1, 0, 3, 2][my_pos as usize]; // opposite of my_pos
+        let their_change_direction = my_change_direction.opposite_dir().unwrap();
 
         // actually add connection between A and B
         let new_fill_a = Fill {
             color: fill_a.color,
             flow: fill_a.flow,
-            dirs: {
-                let mut new_dirs_a = match fill_a.flow {
-                    Flow::Empty => [false; 4],
-                    _ => fill_a.dirs,
-                };
-                new_dirs_a[my_pos] = true;
-                new_dirs_a
-            },
+            dirs: fill_a.dirs.try_connect(my_change_direction).unwrap(),
         };
         let new_fill_b = Fill {
             color: match fill_b.flow {
@@ -432,18 +493,11 @@ impl Board {
                 Flow::Empty => Flow::Line,
                 _ => fill_b.flow,
             },
-            dirs: {
-                let mut new_dirs_b = match fill_b.flow {
-                    Flow::Empty => [false; 4],
-                    _ => fill_b.dirs,
-                };
-                new_dirs_b[their_pos] = true;
-                new_dirs_b
-            },
+            dirs: fill_b.dirs.try_connect(their_change_direction).unwrap(),
         };
         self.fills[pos_a as usize] = new_fill_a;
         self.fills[pos_b as usize] = new_fill_b;
-        return true;
+        true
     }
     // for consistency with add_connection, pos_a will be the one that gets removed
     pub fn remove_connection(&mut self, pos_a: i32, pos_b: i32) -> bool {
@@ -453,43 +507,52 @@ impl Board {
         let fill_a = self.fills[pos_a as usize];
         let fill_b = self.fills[pos_b as usize];
         // precondition: both are not empty, fill_a is not a dot, and both are same color
-        if let Flow::Empty = fill_a.flow {
-            return false;
-        } else if let Flow::Dot = fill_a.flow {
-            return false;
-        }
-        if let Flow::Empty = fill_b.flow {
-            return false;
-        }
+        match fill_a.flow {
+            Flow::Empty => return false,
+            Flow::Dot => return false,
+            _ => (),
+        };
+        match fill_b.flow {
+            Flow::Empty => return false,
+            _ => (),
+        };
         if fill_a.color != fill_b.color {
             return false;
         }
         let delta = pos_b - pos_a;
-        let my_pos = match delta {
-            -1 => 0,                        // left
-            1 => 1,                         // right
-            _ if delta == -self.width => 2, // up
-            _ if delta == self.width => 3,  // down
+        let my_change_direction = match delta {
+            -1 => FlowDir::Left,                       // left
+            1 => FlowDir::Right,                       // right
+            _ if delta == -self.width => FlowDir::Up,  // up
+            _ if delta == self.width => FlowDir::Down, // down
             _ => panic!("Invalid delta"),
         };
-        let other_pos = [1, 0, 3, 2][my_pos as usize]; // opposite of my_pos
+        let their_change_direction = my_change_direction.opposite_dir().unwrap();
+
+        // actually remove connection between A and B
+        let new_dirs = fill_a.dirs.remove_connection(my_change_direction);
         let new_fill_a = Fill {
-            color: 0x000,
-            flow: Flow::Empty,
-            dirs: [false; 4],
+            color: fill_a.color,
+            flow: if new_dirs.num_connections() > 0 {
+                Flow::Line
+            } else {
+                Flow::Empty
+            },
+            dirs: new_dirs,
         };
         let new_fill_b = Fill {
-            color: fill_b.color,
-            flow: fill_b.flow,
-            dirs: {
-                let mut new_dirs_b = fill_b.dirs;
-                new_dirs_b[other_pos] = false;
-                new_dirs_b
+            color: match fill_b.flow {
+                Flow::Empty => fill_a.color,
+                _ => fill_b.color,
             },
+            flow: match fill_b.flow {
+                Flow::Empty => Flow::Line,
+                _ => fill_b.flow,
+            },
+            dirs: fill_b.dirs.remove_connection(their_change_direction),
         };
         self.fills[pos_a as usize] = new_fill_a;
         self.fills[pos_b as usize] = new_fill_b;
-
         true
     }
 
@@ -501,9 +564,9 @@ impl Board {
         for (i, was_visited) in visited.iter().enumerate() {
             if *was_visited {
                 if let Flow::Dot = self.fills[i].flow {
-                    self.fills[i].dirs = [false; 4];
+                    self.fills[i].dirs = FlowDir::Unconnected;
                 } else {
-                    self.fills[i] = Fill::new(0x00, Flow::Empty, [false; 4]);
+                    self.fills[i] = Default::default();
                 }
             }
         }
@@ -561,10 +624,8 @@ impl Board {
         serialized.extend(self.width.to_be_bytes().iter());
         serialized.extend(self.height.to_be_bytes().iter());
         for fill in &self.fills {
-            let mut fill_data = 0;
-            for (i, &dir) in fill.dirs.iter().enumerate() {
-                fill_data |= dir as u32 & (1 << i);
-            }
+            let mut fill_data: u32 = 0;
+            fill_data |= (fill.dirs as u8) as u32;
             fill_data |= match fill.flow {
                 Flow::Empty => 0 << 4,
                 Flow::Line => 1 << 4,
@@ -584,12 +645,7 @@ impl Board {
             panic!("Invalid board size");
         }
         for i in 2..serialized.len() {
-            let dirs = [
-                (serialized[i] & 0b1) != 0,
-                (serialized[i] & 0b10) != 0,
-                (serialized[i] & 0b100) != 0,
-                (serialized[i] & 0b1000) != 0,
-            ];
+            let dirs = FlowDir::try_from(serialized[i] & 0xf).unwrap();
             let flow = match (serialized[i] >> 4) & 0b11 {
                 0 => Flow::Empty,
                 1 => Flow::Line,
@@ -656,26 +712,26 @@ impl Canvas {
     fn render_flow(&mut self, fill: Fill, x: i32, y: i32) {
         let sprite: &[u8; (SPRITE_SIZE * SPRITE_SIZE) as usize] = match fill.flow {
             Flow::Dot => match fill.dirs {
-                [false, false, false, false] => include_bytes!("sprites/0"),
-                [true, false, false, false] => include_bytes!("sprites/1"),
-                [false, true, false, false] => include_bytes!("sprites/2"),
-                [false, false, true, false] => include_bytes!("sprites/3"),
-                [false, false, false, true] => include_bytes!("sprites/4"),
+                FlowDir::Unconnected => include_bytes!("sprites/0"),
+                FlowDir::Left => include_bytes!("sprites/1"),
+                FlowDir::Right => include_bytes!("sprites/2"),
+                FlowDir::Up => include_bytes!("sprites/3"),
+                FlowDir::Down => include_bytes!("sprites/4"),
                 _ => panic!("Invalid flow"),
             },
             Flow::Empty => include_bytes!("sprites/5"),
             Flow::Line => match fill.dirs {
-                [true, false, false, false] => include_bytes!("sprites/6"),
-                [false, true, false, false] => include_bytes!("sprites/7"),
-                [false, false, true, false] => include_bytes!("sprites/8"),
-                [false, false, false, true] => include_bytes!("sprites/9"),
-                [false, true, true, false] => include_bytes!("sprites/10"),
-                [false, true, false, true] => include_bytes!("sprites/11"),
-                [true, false, false, true] => include_bytes!("sprites/12"),
-                [true, false, true, false] => include_bytes!("sprites/13"),
-                [false, false, true, true] => include_bytes!("sprites/14"),
-                [true, true, false, false] => include_bytes!("sprites/15"),
-                _ => panic!("Invalid flow"),
+                FlowDir::Left => include_bytes!("sprites/6"),
+                FlowDir::Right => include_bytes!("sprites/7"),
+                FlowDir::Up => include_bytes!("sprites/8"),
+                FlowDir::Down => include_bytes!("sprites/9"),
+                FlowDir::RightUp => include_bytes!("sprites/10"),
+                FlowDir::RightDown => include_bytes!("sprites/11"),
+                FlowDir::LeftDown => include_bytes!("sprites/12"),
+                FlowDir::LeftUp => include_bytes!("sprites/13"),
+                FlowDir::UpDown => include_bytes!("sprites/14"),
+                FlowDir::LeftRight => include_bytes!("sprites/15"),
+                invalid => panic!("Invalid flow {:?}", invalid),
             },
         };
         let start_x = x * (FLOW_SIZE + BORDER_SIZE);
@@ -741,7 +797,7 @@ impl Canvas {
         let pos: i32 = x_pos + y_pos * self.board.width;
         let relevant_fill = self.board.fills[pos as usize];
         if let Flow::Line = relevant_fill.flow {
-            if relevant_fill.dirs.iter().filter(|b| **b).count() != 1 {
+            if relevant_fill.dirs.num_connections() != 1 {
                 return None;
             }
         }
@@ -827,7 +883,7 @@ impl Canvas {
                             0x000
                         },
                         if is_dot { Flow::Dot } else { Flow::Empty },
-                        [false; 4],
+                        FlowDir::Unconnected,
                     ),
                 );
             }
@@ -869,7 +925,7 @@ impl Canvas {
             return;
         }
         let old_fill = self.board.get_fill(x, y);
-        if old_fill.dirs.iter().filter(|v| **v).count() >= 2 {
+        if old_fill.dirs.num_connections() >= 2 {
             return;
         }
         self.board
@@ -878,8 +934,7 @@ impl Canvas {
 
     pub fn remove_dot_at(&mut self, x: i32, y: i32) {
         self.board.clear_pipe(y * self.board.width + x);
-        self.board
-            .set_fill(x, y, Fill::new(0x000, Flow::Empty, [false; 4]));
+        self.board.set_fill(x, y, Default::default());
     }
 
     pub fn remap_color_palette(&mut self, new_palette: Option<Vec<u16>>) {
