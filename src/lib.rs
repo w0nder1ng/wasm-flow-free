@@ -1,12 +1,14 @@
 mod utils;
 use bitvec::prelude::*;
-use rand::{distributions::Distribution, seq::IteratorRandom, thread_rng, Rng};
+use rand::{
+    distributions::{Distribution, WeightedIndex},
+    seq::IteratorRandom,
+    thread_rng, Rng,
+};
 use std::{
-    cmp::min,
     collections::HashSet,
     convert::{TryFrom, TryInto},
     f32::consts::E,
-    num::NonZeroUsize,
 };
 use wasm_bindgen::prelude::*;
 const SPRITE_SIZE: i32 = 40;
@@ -22,7 +24,7 @@ extern "C" {
     #[wasm_bindgen(js_namespace = console)]
     fn log(s: &str);
 }
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub enum FlowDir {
     #[default]
@@ -40,7 +42,7 @@ pub enum FlowDir {
 }
 
 impl FlowDir {
-    pub fn num_connections(self) -> usize {
+    pub const fn num_connections(self) -> usize {
         (self as u8).count_ones() as usize
     }
     pub fn try_connect(self, other_direction: FlowDir) -> Result<Self, ()> {
@@ -49,11 +51,33 @@ impl FlowDir {
         }
         FlowDir::try_from((self as u8 | other_direction as u8) as u32)
     }
+    pub fn is_connected(self, other_direction: FlowDir) -> bool {
+        if other_direction.num_connections() != 1 {
+            panic!("should only be L/R/U/D");
+        }
+        self as u8 & other_direction as u8 != 0
+    }
     pub fn remove_connection(self, other_direction: FlowDir) -> Self {
         if other_direction.num_connections() != 1 {
             return self;
         }
         FlowDir::try_from((self as u8 & !(other_direction as u8)) as u32).unwrap()
+    }
+
+    const fn mask(self) -> u32 {
+        1 << match self {
+            FlowDir::Left => 0,
+            FlowDir::Right => 1,
+            FlowDir::Up => 2,
+            FlowDir::Down => 3,
+            FlowDir::LeftRight => 4,
+            FlowDir::LeftUp => 5,
+            FlowDir::LeftDown => 6,
+            FlowDir::RightUp => 7,
+            FlowDir::RightDown => 8,
+            FlowDir::UpDown => 9,
+            FlowDir::Unconnected => 10,
+        }
     }
     pub fn opposite_dir(self) -> Result<Self, ()> {
         match self {
@@ -63,6 +87,69 @@ impl FlowDir {
             FlowDir::Down => Ok(FlowDir::Up),
             _ => Err(()),
         }
+    }
+    pub fn get_possible_adjacent(self, other_direction: FlowDir) -> u32 {
+        const LEFT: u32 = 0b0001110001;
+        const RIGHT: u32 = 0b0110010010;
+        const UP: u32 = 0b1010100100;
+        const DOWN: u32 = 0b1101001000;
+
+        const UNCONNECTED_ARR: [u32; 4] = [!RIGHT, !LEFT, !DOWN, !UP];
+        const LEFT_ARR: [u32; 4] = [RIGHT & !FlowDir::Right.mask(), !LEFT, !DOWN, !UP];
+        const RIGHT_ARR: [u32; 4] = [!RIGHT, LEFT & !FlowDir::Left.mask(), !DOWN, !UP];
+        const UP_ARR: [u32; 4] = [!RIGHT, !LEFT, DOWN & !FlowDir::Down.mask(), !UP];
+        const DOWN_ARR: [u32; 4] = [!RIGHT, !LEFT, !DOWN, UP & !FlowDir::Up.mask()];
+        const LEFTRIGHT_ARR: [u32; 4] = [RIGHT, LEFT, !DOWN, !UP];
+        const LEFTUP_ARR: [u32; 4] = [
+            RIGHT & !FlowDir::RightUp.mask(),
+            !LEFT,
+            DOWN & !FlowDir::LeftDown.mask(),
+            !UP,
+        ];
+        const LEFTDOWN_ARR: [u32; 4] = [
+            RIGHT & !FlowDir::RightDown.mask(),
+            !LEFT,
+            !DOWN,
+            UP & !FlowDir::LeftUp.mask(),
+        ];
+        const RIGHTUP_ARR: [u32; 4] = [
+            !RIGHT,
+            LEFT & !FlowDir::LeftUp.mask(),
+            DOWN & !FlowDir::RightDown.mask(),
+            !UP,
+        ];
+        const RIGHTDOWN_ARR: [u32; 4] = [
+            !RIGHT,
+            LEFT & !FlowDir::LeftDown.mask(),
+            !DOWN,
+            UP & !FlowDir::RightUp.mask(),
+        ];
+        const UPDOWN_ARR: [u32; 4] = [!RIGHT, !LEFT, DOWN, UP];
+        if other_direction.num_connections() != 1 {
+            panic!("should only be L/R/U/D");
+        }
+        // left, right, up, down
+        let idx = match other_direction {
+            FlowDir::Left => 0,
+            FlowDir::Right => 1,
+            FlowDir::Up => 2,
+            FlowDir::Down => 3,
+            _ => panic!("must only have one connection"),
+        };
+
+        (match self {
+            FlowDir::Unconnected => UNCONNECTED_ARR,
+            FlowDir::Left => LEFT_ARR,
+            FlowDir::Right => RIGHT_ARR,
+            FlowDir::Up => UP_ARR,
+            FlowDir::Down => DOWN_ARR,
+            FlowDir::LeftRight => LEFTRIGHT_ARR,
+            FlowDir::LeftUp => LEFTUP_ARR,
+            FlowDir::LeftDown => LEFTDOWN_ARR,
+            FlowDir::RightUp => RIGHTUP_ARR,
+            FlowDir::RightDown => RIGHTDOWN_ARR,
+            FlowDir::UpDown => UPDOWN_ARR,
+        })[idx]
     }
 }
 impl TryFrom<u32> for FlowDir {
@@ -135,6 +222,9 @@ fn softmax(ins: Vec<f32>) -> Vec<f32> {
 }
 impl Board {
     pub fn new(width: i32, height: i32) -> Self {
+        if width <= 0 || height <= 0 || width * height < 2 {
+            panic!("board too small")
+        }
         let fills = vec![Default::default(); (width * height) as usize];
         Self {
             width,
@@ -142,221 +232,203 @@ impl Board {
             fills,
         }
     }
-
     pub fn gen_filled_board(width: i32, height: i32) -> Self {
-        /*
-        https://doug-osborne.com/the-level-generator/
-        Same color dots are never next to each other (corollary:  all lines are at least 3 tiles long, including the endpoints).
-        The no “zig-zag” rule, which informally means that lines can’t have unnecessary bends in them.
-        Here’s one way to explicitly define the no “zig-zag” rule:
-        If a line could have entered a square at an earlier point but didn’t, it can’t ever enter that square.
-        */
-        const MIN_LINE_LENGTH: i32 = 3;
-        let max_line_length = if width + height < 20 {
-            width + height - 2
-        } else {
-            width * height / 8
-        };
-        let mut board = Board::new(width, height);
-        let dist_to_edge = |i| {
-            min(
-                min(i / board.width, board.width - 1 - i / board.width),
-                min(i % board.width, board.width - 1 - i % board.width),
-            )
-        };
-        for i in 0.. {
-            let mut used_by: Vec<Option<NonZeroUsize>> = vec![None; (width * height) as usize];
-            // let mut used_by: Vec<i32> = vec![-1; (width * height) as usize];
-            let mut dots: Vec<usize> = Vec::new();
-            let mut filled = 0;
-            let mut rng = thread_rng();
-            let deltas = [-1, 1, -width, width];
-            let mut failed_fills = 0; // number of sequential "short" fills
-            while filled < (width * height) && failed_fills < 10 {
-                let start_pos = (rand::random::<u32>() % ((width * height) - filled) as u32) as i32;
-                let start_pos = (0..(width * height) as usize)
-                    .filter(|&i| used_by[i].is_none())
-                    .nth(start_pos as usize)
-                    .unwrap() as i32; // bounded between 0 and # available, so this can never fail
-
-                let mut flow_current_pos = start_pos;
-                let mut visited = vec![false; (width * height) as usize]; // all locations the path could have visited
-                visited[start_pos as usize] = true;
-                let ideal_length = min(
-                    // rng.gen_range(max(MIN_LINE_LENGTH, max_line_length / 2)..max_line_length),
-                    max_line_length,
-                    width * height - filled,
-                );
-                let pipe_id = (dots.len() / 2) + 1;
-
-                let mut times_since_turn = 0;
-                for _ in 0..ideal_length {
-                    if filled >= width * height {
-                        break;
-                    }
-
-                    let possible_nbrs = deltas
-                        .iter()
-                        .filter(|&delta| {
-                            let flow_new_pos = flow_current_pos as i32 + delta;
-                            board.adjacent(flow_current_pos, flow_new_pos)
-                                && !visited[flow_new_pos as usize]
-                                && used_by[flow_new_pos as usize].is_none()
-                        })
-                        .map(|i| flow_current_pos as i32 + i)
-                        .collect::<Vec<i32>>();
-                    for &flow_current_nbr in possible_nbrs.iter() {
-                        visited[flow_current_nbr as usize] = true;
-                    }
-                    /*
-                    TODO:
-                    check for "forced" moves
-                    rng with different factors, softmax and pick randomly
-                    make a nicer softmax
-                    */
-
-                    let weights: Vec<f32> = possible_nbrs
-                        .iter()
-                        .map(|&nbr| {
-                            (-(times_since_turn as f32) + (ideal_length as f32) * 0.25)
-                                + 1.25
-                                    * (if dist_to_edge(nbr) != 0
-                                        && dist_to_edge(flow_current_pos) == 0
-                                    {
-                                        -1.0
-                                    } else {
-                                        1.0
-                                    })
-                        })
-                        .collect();
-                    // log(&format!("before: {:?}", weights));
-                    let weights = softmax(weights);
-                    // log(&format!("after: {:?}", weights));
-                    let nbr_to_use = rand::distributions::WeightedIndex::new(&weights)
-                        .map_or_else(|_| 0, |val| val.sample(&mut rng));
-
-                    if let Some(&nbr) = possible_nbrs.iter().nth(nbr_to_use) {
-                        if dist_to_edge(nbr) == dist_to_edge(flow_current_pos) {
-                            times_since_turn += 1;
-                        } else {
-                            times_since_turn = 0;
-                        }
-                        used_by[nbr as usize] = Some(NonZeroUsize::new(pipe_id).unwrap());
-                        // used_by[nbr as usize] = start_pos;
-                        filled += 1;
-                        flow_current_pos = nbr;
-                    } else {
-                        break;
-                    }
-                }
-
-                if flow_current_pos != start_pos {
-                    filled += 1;
-                    failed_fills = 0;
-                    used_by[start_pos as usize] = Some(NonZeroUsize::new(pipe_id).unwrap());
-                    dots.push(start_pos as usize);
-                    dots.push(flow_current_pos as usize);
+        // 0: left, 1: right, 2: up, 3: down, 4: left-right, 5: left-up,
+        // 6: left-down, 7: right-up, 8: right-down, 9: up-down, 10: unconnected
+        let mut board = Self::new(width, height);
+        let mut rng = thread_rng();
+        const WEIGHTS: [f32; 10] = [-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.5, 1.5];
+        let grid_w = (width + 2) as usize;
+        let grid_h = (height + 2) as usize;
+        let mut to_fill: Vec<Option<FlowDir>> = Vec::new();
+        for num_iters in 0.. {
+            if num_iters > 1_000 {
+                panic!("failed to generate");
+            }
+            to_fill = vec![None; (grid_w * grid_h) as usize];
+            let mut all_candidates: Vec<u32> = vec![0b1111111111; grid_w * grid_h];
+            let mut num_open: i32 = all_candidates.len() as i32;
+            for i in 0..to_fill.len() {
+                // set all edges to FlowDir::Unconnected
+                if i % grid_w == 0 {
+                    all_candidates[i + 1] &=
+                        FlowDir::Unconnected.get_possible_adjacent(FlowDir::Right);
+                } else if i % grid_w == (grid_w - 1) {
+                    all_candidates[i - 1] &=
+                        FlowDir::Unconnected.get_possible_adjacent(FlowDir::Left);
+                } else if i / grid_w == 0 {
+                    all_candidates[i + grid_w] &=
+                        FlowDir::Unconnected.get_possible_adjacent(FlowDir::Down);
+                } else if i / grid_w == (grid_h - 1) {
+                    all_candidates[i - grid_w] &=
+                        FlowDir::Unconnected.get_possible_adjacent(FlowDir::Up);
                 } else {
-                    failed_fills += 1;
-                }
-            }
-
-            // try to extend lines to fill blank spaces
-            // the number of passes is arbitrary, but it ought to be enough
-            const FILL_PASSES: usize = 5;
-            for _ in 0..FILL_PASSES {
-                let blanks = (0..(width * height) as usize)
-                    .filter(|i| used_by[*i].is_none())
-                    .collect::<Vec<usize>>();
-                for blank in blanks {
-                    let all_nbrs: Vec<i32> = deltas
-                        .iter()
-                        .filter(|&delta| {
-                            let new_pos = blank as i32 + delta;
-                            board.adjacent(blank as i32, new_pos)
-                        })
-                        .map(|i| blank as i32 + i)
-                        .collect();
-
-                    let adjacent_dots: Vec<i32> = all_nbrs
-                        .iter()
-                        .copied()
-                        .filter(|&i| used_by[i as usize].is_some() && dots.contains(&(i as usize)))
-                        .collect();
-
-                    let adjacent_used_by: Vec<NonZeroUsize> = all_nbrs
-                        .iter()
-                        .filter(|&&i| used_by[i as usize].is_some())
-                        .map(|&i| used_by[i as usize].unwrap())
-                        .collect();
-
-                    let adjacent_dots = adjacent_dots.iter().filter(|&&dot| {
-                        adjacent_used_by
-                            .iter()
-                            .filter(|&&id| id == used_by[dot as usize].unwrap())
-                            .count()
-                            < 2
-                    });
-                    let (mut dot_choice, mut best_pipe_ct) = (None, None);
-                    for &nbr in adjacent_dots {
-                        if let Some(pos) = dots.iter().position(|&x| x == nbr as usize) {
-                            let id = NonZeroUsize::new(pos / 2 + 1);
-                            let this_pipe_ct =
-                                used_by.iter().filter(|&&elem| elem == id).count() as usize;
-                            if let Some(pipe_ct) = best_pipe_ct {
-                                if pipe_ct < this_pipe_ct {
-                                    best_pipe_ct = Some(this_pipe_ct);
-                                    dot_choice = Some(pos);
-                                }
-                            } else {
-                                dot_choice = Some(pos);
-                                best_pipe_ct = Some(this_pipe_ct);
-                            }
-                        }
-                    }
-                    if let Some(dot_choice) = dot_choice {
-                        used_by[blank] = Some(NonZeroUsize::new(dot_choice / 2 + 1).unwrap());
-                        dots[dot_choice] = blank as usize;
-                    }
-                }
-            }
-
-            if used_by.iter().all(|&b| b.is_some()) {
-                let mut color_counts = vec![0; dots.len() / 2];
-                for val in used_by.iter() {
-                    color_counts[val.unwrap().get() - 1] += 1;
-                }
-                if color_counts.iter().any(|&v| v <= 2) {
                     continue;
                 }
+                to_fill[i] = Some(FlowDir::Unconnected);
+                num_open -= 1;
+            }
 
-                let palette = get_color_palette((dots.len() / 2) as i32);
-                for i in 0..(width * height) {
-                    board.set_fill(
-                        i % width,
-                        i / width,
-                        Fill::new(
-                            palette[used_by[i as usize].unwrap().get() - 1],
-                            match dots.contains(&(i as usize)) {
-                                true => Flow::Dot,
-                                false => Flow::Line,
-                            },
-                            FlowDir::Unconnected,
-                        ),
+            // let mut ct = 0;
+            // idx placed, possible w/o choice, old neighbor possible
+            // TODO: implement rollbacks, excluding options that we hit and won't work
+            let mut rollbacks: Vec<(usize, u32, [Option<u32>; 4])> = Vec::new();
+            while num_open > 0 {
+                let candidate = all_candidates
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| to_fill[*i].is_none())
+                    .min_by(|(_, a), (_, b)| a.count_ones().cmp(&b.count_ones()))
+                    .map(|(index, _)| index)
+                    .unwrap();
+                // 0: left, 1: right, 2: up, 3: down, 4: left-right, 5: left-up,
+                // 6: left-down, 7: right-up, 8: right-down, 9: up-down
+                let possible: u32 = all_candidates[candidate];
+                let nbrs = [
+                    candidate - 1,
+                    candidate + 1,
+                    candidate - grid_w,
+                    candidate + grid_w,
+                ];
+                let dirs = [FlowDir::Left, FlowDir::Right, FlowDir::Up, FlowDir::Down];
+
+                if possible != 0 {
+                    // log(&format!("0b{:010b}", possible));
+                    let choices_indices: Vec<usize> =
+                        (0..10).filter(|i| possible & (1 << i) != 0).collect();
+                    let weights = softmax(choices_indices.iter().map(|&i| WEIGHTS[i]).collect());
+                    let dist = WeightedIndex::new(weights).unwrap();
+                    let choice = choices_indices[dist.sample(&mut rng)];
+                    rollbacks.push((
+                        candidate,
+                        possible & !(1 << choice),
+                        nbrs.iter()
+                            .map(|&i| {
+                                if to_fill[i].is_none() {
+                                    Some(all_candidates[i])
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<Option<u32>>>()
+                            .try_into()
+                            .unwrap(),
+                    ));
+                    to_fill[candidate] = Some(
+                        [
+                            FlowDir::Left,
+                            FlowDir::Right,
+                            FlowDir::Up,
+                            FlowDir::Down,
+                            FlowDir::LeftRight,
+                            FlowDir::LeftUp,
+                            FlowDir::LeftDown,
+                            FlowDir::RightUp,
+                            FlowDir::RightDown,
+                            FlowDir::UpDown,
+                        ][choice],
                     );
+                    num_open -= 1;
+                    for (&possible_neighbor, &change_dir) in nbrs.iter().zip(dirs.iter()) {
+                        let dir = to_fill[candidate].unwrap();
+                        all_candidates[possible_neighbor] &= dir.get_possible_adjacent(change_dir);
+                    }
+                } else {
+                    let (pos, possible_without_choice, old_nbrs) = rollbacks.pop().unwrap();
+                    if possible_without_choice == 0 {
+                        break;
+                    }
+                    let old_nbr_idx = [pos - 1, pos + 1, pos - grid_w, pos + grid_w];
+                    all_candidates[pos] = possible_without_choice;
+                    to_fill[pos] = None;
+                    for (i, &idx) in old_nbr_idx.iter().enumerate() {
+                        match old_nbrs[i] {
+                            Some(possible) => all_candidates[idx] = possible,
+                            None => (),
+                        }
+                    }
+                    num_open += 1;
                 }
-                // add connections to appropriate adjacent spots
-                for i in 0..(width * height) {
-                    let deltas = [-1, 1, -width, width];
-                    for &delta in deltas.iter() {
-                        let new_pos = i + delta;
-                        if board.adjacent(i, new_pos) && used_by[new_pos as usize].is_some() {
-                            board.add_connection(i, new_pos);
+            }
+            if !to_fill.contains(&None) {
+                // log(&format!("finished in {} iterations", num_iters));
+                break;
+            }
+        }
+        // divvy into paths and break up loops
+        // TODO: break up loops/self-intersections
+        let mut paths: Vec<Vec<usize>> = Vec::new();
+        let mut checked = bitvec![0; grid_w*grid_h];
+        let dirs = [FlowDir::Left, FlowDir::Right, FlowDir::Up, FlowDir::Down];
+
+        for (i, val) in to_fill.iter().enumerate() {
+            if let Some(FlowDir::Unconnected) = val {
+                checked.set(i, true);
+            }
+        }
+        while checked.count_zeros() > 0 {
+            let mut pos_iter = checked.iter().enumerate().filter(|(i, b)| {
+                !**b && to_fill[*i]
+                    .unwrap_or(FlowDir::Unconnected)
+                    .num_connections()
+                    == 1
+            });
+            let mut pos = match pos_iter.next() {
+                Some((pos, _)) => pos,
+                None => break,
+            };
+            let mut intermediate: Vec<usize> = Vec::new();
+
+            while !checked[pos] {
+                checked.set(pos, true);
+                intermediate.push(pos);
+                let nbrs = [pos - 1, pos + 1, pos - grid_w, pos + grid_w];
+                if let Some(flow_dir) = to_fill[pos] {
+                    for (&dir, nbr) in dirs.iter().zip(nbrs.iter()) {
+                        if flow_dir.is_connected(dir) && !checked[*nbr] {
+                            // TODO: work out how to split a path into 2
+                            // if intermediate.contains(nbr) {
+                            //     let mut old_vec = intermediate;
+                            //     intermediate = old_vec.split_off(old_vec.len() / 2);
+                            //     let line_end_pos = old_vec.last().unwrap();
+                            // }
+                            pos = *nbr;
+                            continue;
                         }
                     }
                 }
-                log(&format!("called loop {} times", i));
-                break;
+            }
+            paths.push(intermediate);
+        }
+        // TODO: post-processing- add colors
+        for i in 0..to_fill.len() {
+            to_fill[i] = Some(to_fill[i].unwrap_or(FlowDir::Unconnected));
+        }
+        for grid_r in 1..grid_w - 1 {
+            for grid_c in 1..grid_h - 1 {
+                let board_pos = (grid_c - 1) + (grid_r - 1) * (width as usize);
+                board.fills[board_pos] = match to_fill[grid_c + grid_r * grid_w] {
+                    Some(dirs) => Fill::new(
+                        0xfff,
+                        match dirs.num_connections() {
+                            1 => Flow::Dot,
+                            2 => Flow::Line,
+                            0 => Flow::Empty,
+                            _ => panic!("illegal number of connections when generating board"),
+                        },
+                        dirs,
+                    ),
+                    None => Default::default(),
+                };
+            }
+        }
+        log(&format!("{:?}", paths));
+        let palette = get_color_palette(paths.len() as i32);
+        for (i, path) in paths.iter().enumerate() {
+            for pos in path {
+                let board_pos = pos - grid_w - 2 * (pos / grid_w - 1) - 1;
+                log(&format!("{} {}", pos, board_pos));
+                board.fills[board_pos].color = palette[i];
             }
         }
         board
