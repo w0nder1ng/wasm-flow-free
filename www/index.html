@@ -54,7 +54,7 @@
         let wasm = await init();
         let memory = wasm.memory;
         let grid_size = 5;
-        const use_filled = true;
+        const use_filled = false;
         let canvas = use_filled ? Canvas.gen_filled_board(grid_size, grid_size) : Canvas.gen_new_board(grid_size, grid_size);
         if (window.location.search) {
             let params = new URLSearchParams(window.location.search);
