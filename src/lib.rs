@@ -79,13 +79,13 @@ impl FlowDir {
             FlowDir::Unconnected => 10,
         }
     }
-    pub fn opposite_dir(self) -> Result<Self, ()> {
+    pub fn rev(self) -> Self {
         match self {
-            FlowDir::Left => Ok(FlowDir::Right),
-            FlowDir::Right => Ok(FlowDir::Left),
-            FlowDir::Up => Ok(FlowDir::Down),
-            FlowDir::Down => Ok(FlowDir::Up),
-            _ => Err(()),
+            FlowDir::Left => FlowDir::Right,
+            FlowDir::Right => FlowDir::Left,
+            FlowDir::Up => FlowDir::Down,
+            FlowDir::Down => FlowDir::Up,
+            _ => panic!("can only call with L/R/U/D"),
         }
     }
     pub fn get_possible_adjacent(self, other_direction: FlowDir) -> u32 {
@@ -237,7 +237,7 @@ impl Board {
         // 6: left-down, 7: right-up, 8: right-down, 9: up-down, 10: unconnected
         let mut board = Self::new(width, height);
         let mut rng = thread_rng();
-        const WEIGHTS: [f32; 10] = [-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.5, 1.5];
+        const WEIGHTS: [f32; 10] = [-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 3.0, 3.0];
         let grid_w = (width + 2) as usize;
         let grid_h = (height + 2) as usize;
         let mut to_fill: Vec<Option<FlowDir>> = Vec::new();
@@ -271,7 +271,6 @@ impl Board {
 
             // let mut ct = 0;
             // idx placed, possible w/o choice, old neighbor possible
-            // TODO: implement rollbacks, excluding options that we hit and won't work
             let mut rollbacks: Vec<(usize, u32, [Option<u32>; 4])> = Vec::new();
             while num_open > 0 {
                 let candidate = all_candidates
@@ -351,7 +350,7 @@ impl Board {
                 }
             }
             if !to_fill.contains(&None) {
-                // log(&format!("finished in {} iterations", num_iters));
+                log(&format!("finished in {} iterations", num_iters));
                 break;
             }
         }
@@ -377,6 +376,7 @@ impl Board {
                 Some((pos, _)) => pos,
                 None => break,
             };
+            assert!(to_fill[pos].unwrap().num_connections() == 1);
             let mut intermediate: Vec<usize> = Vec::new();
 
             while !checked[pos] {
@@ -386,12 +386,6 @@ impl Board {
                 if let Some(flow_dir) = to_fill[pos] {
                     for (&dir, nbr) in dirs.iter().zip(nbrs.iter()) {
                         if flow_dir.is_connected(dir) && !checked[*nbr] {
-                            // TODO: work out how to split a path into 2
-                            // if intermediate.contains(nbr) {
-                            //     let mut old_vec = intermediate;
-                            //     intermediate = old_vec.split_off(old_vec.len() / 2);
-                            //     let line_end_pos = old_vec.last().unwrap();
-                            // }
                             pos = *nbr;
                             continue;
                         }
@@ -400,7 +394,61 @@ impl Board {
             }
             paths.push(intermediate);
         }
-        // TODO: post-processing- add colors
+        // TODO: make this apply to all loops
+        // this breaks up only one loop
+        // hopefully shouldn't be now
+        while checked.count_zeros() > 0 {
+            log("found loop!");
+            let start_pos = checked.leading_ones();
+            let mut chosen_pos = vec![start_pos];
+            let mut chosen_dirs = Vec::new();
+
+            while !checked[*chosen_pos.last().unwrap()] {
+                let pos = *chosen_pos.last().unwrap();
+                checked.set(pos, true);
+                let nbrs = [pos - 1, pos + 1, pos - grid_w, pos + grid_w];
+                let dirs = [FlowDir::Left, FlowDir::Right, FlowDir::Up, FlowDir::Down];
+                let first = nbrs
+                    .iter()
+                    .zip(dirs.iter())
+                    .filter(|(nbr, delta)| {
+                        !checked[**nbr] && to_fill[pos].unwrap().is_connected(**delta)
+                    })
+                    .next();
+                let Some(first) = first else {
+                    break;
+                };
+                chosen_dirs.push(*first.1);
+                chosen_pos.push(*first.0);
+            }
+            let last_pos = *chosen_pos.last().unwrap();
+            let last_dir = to_fill[last_pos]
+                .unwrap()
+                .remove_connection(*chosen_dirs.last().unwrap())
+                .rev();
+            to_fill[last_pos] = Some(to_fill[last_pos].unwrap().remove_connection(last_dir));
+            to_fill[start_pos] = Some(
+                to_fill[start_pos]
+                    .unwrap()
+                    .remove_connection(last_dir.rev()),
+            );
+
+            let middle = chosen_pos.len() / 2;
+            let middle_pos_a = chosen_pos[middle];
+            let middle_pos_b = chosen_pos[middle + 1];
+            let middle_dir = chosen_dirs[middle];
+            to_fill[middle_pos_a] =
+                Some(to_fill[middle_pos_a].unwrap().remove_connection(middle_dir));
+            to_fill[middle_pos_b] = Some(
+                to_fill[middle_pos_b]
+                    .unwrap()
+                    .remove_connection(middle_dir.rev()),
+            );
+            let mut old_vec = chosen_pos;
+            let new_split = old_vec.split_off(middle + 1);
+            paths.push(old_vec);
+            paths.push(new_split);
+        }
         for i in 0..to_fill.len() {
             to_fill[i] = Some(to_fill[i].unwrap_or(FlowDir::Unconnected));
         }
@@ -422,15 +470,14 @@ impl Board {
                 };
             }
         }
-        log(&format!("{:?}", paths));
         let palette = get_color_palette(paths.len() as i32);
         for (i, path) in paths.iter().enumerate() {
             for pos in path {
                 let board_pos = pos - grid_w - 2 * (pos / grid_w - 1) - 1;
-                log(&format!("{} {}", pos, board_pos));
                 board.fills[board_pos].color = palette[i];
             }
         }
+
         board
     }
 
@@ -548,7 +595,7 @@ impl Board {
             _ if delta == self.width => FlowDir::Down, // down
             _ => panic!("Invalid delta"),
         };
-        let their_change_direction = my_change_direction.opposite_dir().unwrap();
+        let their_change_direction = my_change_direction.rev();
 
         // actually add connection between A and B
         let new_fill_a = Fill {
@@ -599,7 +646,7 @@ impl Board {
             _ if delta == self.width => FlowDir::Down, // down
             _ => panic!("Invalid delta"),
         };
-        let their_change_direction = my_change_direction.opposite_dir().unwrap();
+        let their_change_direction = my_change_direction.rev();
 
         // actually remove connection between A and B
         let new_dirs = fill_a.dirs.remove_connection(my_change_direction);
