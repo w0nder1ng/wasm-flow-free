@@ -398,8 +398,13 @@ impl Board {
         // this breaks up only one loop
         // hopefully shouldn't be now
         while checked.count_zeros() > 0 {
-            log("found loop!");
-            let start_pos = checked.leading_ones();
+            // log("found loop!");
+            let start_pos = checked
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| !**b)
+                .choose(&mut rng);
+            let start_pos = start_pos.unwrap().0;
             let mut chosen_pos = vec![start_pos];
             let mut chosen_dirs = Vec::new();
 
@@ -422,10 +427,20 @@ impl Board {
                 chosen_pos.push(*first.0);
             }
             let last_pos = *chosen_pos.last().unwrap();
-            let last_dir = to_fill[last_pos]
+            let last_nbrs = [
+                last_pos - 1,
+                last_pos + 1,
+                last_pos - grid_w,
+                last_pos + grid_w,
+            ];
+            let dirs = [FlowDir::Left, FlowDir::Right, FlowDir::Up, FlowDir::Down];
+            let last_dir = *dirs
+                .iter()
+                .zip(last_nbrs.iter())
+                .filter(|(_, nbr)| **nbr == start_pos)
+                .next()
                 .unwrap()
-                .remove_connection(*chosen_dirs.last().unwrap())
-                .rev();
+                .0;
             to_fill[last_pos] = Some(to_fill[last_pos].unwrap().remove_connection(last_dir));
             to_fill[start_pos] = Some(
                 to_fill[start_pos]
