@@ -633,7 +633,11 @@ impl Board {
             _ => panic!("Invalid delta"),
         };
         let their_change_direction = my_change_direction.rev();
-
+        if !fill_a.dirs.is_connected(my_change_direction)
+            || !fill_b.dirs.is_connected(their_change_direction)
+        {
+            return false;
+        }
         // actually remove connection between A and B
         let new_dirs = fill_a.dirs.remove_connection(my_change_direction);
         let new_fill_a = Fill {
@@ -658,6 +662,7 @@ impl Board {
         };
         self.fills[pos_a as usize] = new_fill_a;
         self.fills[pos_b as usize] = new_fill_b;
+
         true
     }
 
