@@ -28,7 +28,7 @@ extern "C" {
 #[repr(u8)]
 pub enum FlowDir {
     #[default]
-    Unconnected = 0b0000,
+    Detached = 0b0000,
     Left = 0b0001,
     Right = 0b0010,
     Up = 0b0100,
@@ -76,7 +76,7 @@ impl FlowDir {
             FlowDir::RightUp => 7,
             FlowDir::RightDown => 8,
             FlowDir::UpDown => 9,
-            FlowDir::Unconnected => 10,
+            FlowDir::Detached => 10,
         }
     }
     pub fn rev(self) -> Self {
@@ -88,7 +88,8 @@ impl FlowDir {
             _ => panic!("can only call with L/R/U/D"),
         }
     }
-    pub fn get_possible_adjacent(self, other_direction: FlowDir) -> u32 {
+    #[rustfmt::skip]
+    pub fn allowed_adjacent(self, other_direction: FlowDir) -> u32 {
         const LEFT: u32 = 0b0001110001;
         const RIGHT: u32 = 0b0110010010;
         const UP: u32 = 0b1010100100;
@@ -100,31 +101,12 @@ impl FlowDir {
         const UP_ARR: [u32; 4] = [!RIGHT, !LEFT, DOWN & !FlowDir::Down.mask(), !UP];
         const DOWN_ARR: [u32; 4] = [!RIGHT, !LEFT, !DOWN, UP & !FlowDir::Up.mask()];
         const LEFTRIGHT_ARR: [u32; 4] = [RIGHT, LEFT, !DOWN, !UP];
-        const LEFTUP_ARR: [u32; 4] = [
-            RIGHT & !FlowDir::RightUp.mask(),
-            !LEFT,
-            DOWN & !FlowDir::LeftDown.mask(),
-            !UP,
-        ];
-        const LEFTDOWN_ARR: [u32; 4] = [
-            RIGHT & !FlowDir::RightDown.mask(),
-            !LEFT,
-            !DOWN,
-            UP & !FlowDir::LeftUp.mask(),
-        ];
-        const RIGHTUP_ARR: [u32; 4] = [
-            !RIGHT,
-            LEFT & !FlowDir::LeftUp.mask(),
-            DOWN & !FlowDir::RightDown.mask(),
-            !UP,
-        ];
-        const RIGHTDOWN_ARR: [u32; 4] = [
-            !RIGHT,
-            LEFT & !FlowDir::LeftDown.mask(),
-            !DOWN,
-            UP & !FlowDir::RightUp.mask(),
-        ];
+        const LEFTUP_ARR: [u32; 4] = [RIGHT & !FlowDir::RightUp.mask(), !LEFT, DOWN & !FlowDir::LeftDown.mask(), !UP];
+        const LEFTDOWN_ARR: [u32; 4] = [RIGHT & !FlowDir::RightDown.mask(), !LEFT, !DOWN, UP & !FlowDir::LeftUp.mask()];
+        const RIGHTUP_ARR: [u32; 4] = [!RIGHT, LEFT & !FlowDir::LeftUp.mask(), DOWN & !FlowDir::RightDown.mask(), !UP];
+        const RIGHTDOWN_ARR: [u32; 4] = [!RIGHT, LEFT & !FlowDir::LeftDown.mask(), !DOWN, UP & !FlowDir::RightUp.mask()];
         const UPDOWN_ARR: [u32; 4] = [!RIGHT, !LEFT, DOWN, UP];
+
         if other_direction.num_connections() != 1 {
             panic!("should only be L/R/U/D");
         }
@@ -138,7 +120,7 @@ impl FlowDir {
         };
 
         (match self {
-            FlowDir::Unconnected => UNCONNECTED_ARR,
+            FlowDir::Detached => UNCONNECTED_ARR,
             FlowDir::Left => LEFT_ARR,
             FlowDir::Right => RIGHT_ARR,
             FlowDir::Up => UP_ARR,
@@ -156,7 +138,7 @@ impl TryFrom<u32> for FlowDir {
     type Error = ();
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
-            0b0000 => Ok(FlowDir::Unconnected),
+            0b0000 => Ok(FlowDir::Detached),
             0b0001 => Ok(FlowDir::Left),
             0b0010 => Ok(FlowDir::Right),
             0b0100 => Ok(FlowDir::Up),
@@ -237,7 +219,7 @@ impl Board {
         // 6: left-down, 7: right-up, 8: right-down, 9: up-down, 10: unconnected
         let mut board = Self::new(width, height);
         let mut rng = thread_rng();
-        const WEIGHTS: [f32; 10] = [-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 3.0, 3.0];
+        const WEIGHTS: [f32; 10] = [-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0];
         let grid_w = (width + 2) as usize;
         let grid_h = (height + 2) as usize;
         let mut to_fill: Vec<Option<FlowDir>> = Vec::new();
@@ -251,21 +233,17 @@ impl Board {
             for i in 0..to_fill.len() {
                 // set all edges to FlowDir::Unconnected
                 if i % grid_w == 0 {
-                    all_candidates[i + 1] &=
-                        FlowDir::Unconnected.get_possible_adjacent(FlowDir::Right);
+                    all_candidates[i + 1] &= FlowDir::Detached.allowed_adjacent(FlowDir::Right);
                 } else if i % grid_w == (grid_w - 1) {
-                    all_candidates[i - 1] &=
-                        FlowDir::Unconnected.get_possible_adjacent(FlowDir::Left);
+                    all_candidates[i - 1] &= FlowDir::Detached.allowed_adjacent(FlowDir::Left);
                 } else if i / grid_w == 0 {
-                    all_candidates[i + grid_w] &=
-                        FlowDir::Unconnected.get_possible_adjacent(FlowDir::Down);
+                    all_candidates[i + grid_w] &= FlowDir::Detached.allowed_adjacent(FlowDir::Down);
                 } else if i / grid_w == (grid_h - 1) {
-                    all_candidates[i - grid_w] &=
-                        FlowDir::Unconnected.get_possible_adjacent(FlowDir::Up);
+                    all_candidates[i - grid_w] &= FlowDir::Detached.allowed_adjacent(FlowDir::Up);
                 } else {
                     continue;
                 }
-                to_fill[i] = Some(FlowDir::Unconnected);
+                to_fill[i] = Some(FlowDir::Detached);
                 num_open -= 1;
             }
 
@@ -283,12 +261,8 @@ impl Board {
                 // 0: left, 1: right, 2: up, 3: down, 4: left-right, 5: left-up,
                 // 6: left-down, 7: right-up, 8: right-down, 9: up-down
                 let possible: u32 = all_candidates[candidate];
-                let nbrs = [
-                    candidate - 1,
-                    candidate + 1,
-                    candidate - grid_w,
-                    candidate + grid_w,
-                ];
+                #[rustfmt::skip]
+                let nbrs = [candidate - 1, candidate + 1, candidate - grid_w, candidate + grid_w];
                 let dirs = [FlowDir::Left, FlowDir::Right, FlowDir::Up, FlowDir::Down];
 
                 if possible != 0 {
@@ -330,7 +304,7 @@ impl Board {
                     num_open -= 1;
                     for (&possible_neighbor, &change_dir) in nbrs.iter().zip(dirs.iter()) {
                         let dir = to_fill[candidate].unwrap();
-                        all_candidates[possible_neighbor] &= dir.get_possible_adjacent(change_dir);
+                        all_candidates[possible_neighbor] &= dir.allowed_adjacent(change_dir);
                     }
                 } else {
                     let (pos, possible_without_choice, old_nbrs) = rollbacks.pop().unwrap();
@@ -361,16 +335,13 @@ impl Board {
         let dirs = [FlowDir::Left, FlowDir::Right, FlowDir::Up, FlowDir::Down];
 
         for (i, val) in to_fill.iter().enumerate() {
-            if let Some(FlowDir::Unconnected) = val {
+            if let Some(FlowDir::Detached) = val {
                 checked.set(i, true);
             }
         }
         while checked.count_zeros() > 0 {
             let mut pos_iter = checked.iter().enumerate().filter(|(i, b)| {
-                !**b && to_fill[*i]
-                    .unwrap_or(FlowDir::Unconnected)
-                    .num_connections()
-                    == 1
+                !**b && to_fill[*i].unwrap_or(FlowDir::Detached).num_connections() == 1
             });
             let mut pos = match pos_iter.next() {
                 Some((pos, _)) => pos,
@@ -465,7 +436,7 @@ impl Board {
             paths.push(new_split);
         }
         for i in 0..to_fill.len() {
-            to_fill[i] = Some(to_fill[i].unwrap_or(FlowDir::Unconnected));
+            to_fill[i] = Some(to_fill[i].unwrap_or(FlowDir::Detached));
         }
         for grid_r in 1..grid_w - 1 {
             for grid_c in 1..grid_h - 1 {
@@ -698,7 +669,7 @@ impl Board {
         for (i, was_visited) in visited.iter().enumerate() {
             if *was_visited {
                 if let Flow::Dot = self.fills[i].flow {
-                    self.fills[i].dirs = FlowDir::Unconnected;
+                    self.fills[i].dirs = FlowDir::Detached;
                 } else {
                     self.fills[i] = Default::default();
                 }
@@ -846,7 +817,7 @@ impl Canvas {
     fn render_flow(&mut self, fill: Fill, x: i32, y: i32) {
         let sprite: &[u8; (SPRITE_SIZE * SPRITE_SIZE) as usize] = match fill.flow {
             Flow::Dot => match fill.dirs {
-                FlowDir::Unconnected => include_bytes!("sprites/0"),
+                FlowDir::Detached => include_bytes!("sprites/0"),
                 FlowDir::Left => include_bytes!("sprites/1"),
                 FlowDir::Right => include_bytes!("sprites/2"),
                 FlowDir::Up => include_bytes!("sprites/3"),
@@ -1017,7 +988,7 @@ impl Canvas {
                             0x000
                         },
                         if is_dot { Flow::Dot } else { Flow::Empty },
-                        FlowDir::Unconnected,
+                        FlowDir::Detached,
                     ),
                 );
             }
