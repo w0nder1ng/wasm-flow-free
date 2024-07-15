@@ -2,8 +2,8 @@ mod utils;
 use bitvec::prelude::*;
 use rand::{
     distributions::{Distribution, WeightedIndex},
-    seq::IteratorRandom,
-    thread_rng, Rng,
+    seq::{IteratorRandom, SliceRandom},
+    thread_rng,
 };
 use std::{
     collections::HashSet,
@@ -324,7 +324,7 @@ impl Board {
                 }
             }
             if !to_fill.contains(&None) {
-                log(&format!("finished in {} iterations", num_iters));
+                // log(&format!("finished in {} iterations", num_iters));
                 break;
             }
         }
@@ -1083,15 +1083,20 @@ impl Canvas {
 
 #[wasm_bindgen]
 pub fn get_color_palette(size: i32) -> Vec<u16> {
+    assert!(size > 0);
+    // log(&format!("palette size: {}", size));
     const CLASSIC_COLORS: [u16; 8] = [0xf00, 0xff0, 0x13f, 0x0a0, 0xa33, 0xfa0, 0x0ff, 0xf0c];
     const CONTRAST_COLORS: [u16; 25] = [
         0xfaf, 0x7d, 0x930, 0x405, 0x053, 0x2c4, 0xfc9, 0x888, 0x9fb, 0x870, 0x9c0, 0xc08, 0x038,
         0xfa0, 0xfab, 0x460, 0xf01, 0x5ff, 0x098, 0xef6, 0x70f, 0x900, 0xff8, 0xff0, 0xf50,
     ];
     let mut rng = thread_rng();
-    if size < CLASSIC_COLORS.len() as i32 {
+    // TODO: change these back
+    if false {
+        //size < CLASSIC_COLORS.len() as i32 {
         CLASSIC_COLORS[0..size as usize].to_vec()
-    } else if size < CONTRAST_COLORS.len() as i32 {
+    } else if false {
+        //size < CONTRAST_COLORS.len() as i32 {
         CONTRAST_COLORS
             .iter()
             .choose_multiple(&mut rng, size as usize)
@@ -1100,19 +1105,45 @@ pub fn get_color_palette(size: i32) -> Vec<u16> {
             .collect()
     } else {
         let mut colors = Vec::with_capacity(size as usize);
-        loop {
-            for _ in colors.len()..size as usize {
-                let red = rng.gen_range(4..16);
-                let green = rng.gen_range(4..16);
-                let blue = rng.gen_range(4..16);
-                colors.push((red << 8) | (green << 4) | blue);
-            }
-            colors.sort();
-            colors.dedup();
-            if colors.len() == size as usize {
-                break;
+
+        let h_step = 360.0 / ((size + 1) as f32);
+        // log(&format!("h_step: {}", h_step));
+
+        for i in 0..size {
+            for s_val in (3..=9).step_by(6) {
+                let (h, s, l) = (h_step * (i as f32), (s_val as f32) / 10.0, 0.5);
+                // log(&format!("h{} s{} l{}", h, s, l));
+                colors.push(hsl_to_rgb16(h, s, l));
             }
         }
+        colors.sort_unstable();
+        colors.dedup();
+        colors.shuffle(&mut rng);
+        colors.truncate(size as usize);
+        assert_eq!(size, colors.len() as i32);
         colors
     }
+}
+
+fn hsl_to_rgb16(h: f32, s: f32, l: f32) -> u16 {
+    // https://en.wikipedia.org/wiki/HSL_and_HSV#HSL_to_RGB
+    let h = h.min(360.0).max(0.0);
+    let s = s.min(1.0).max(0.0);
+    let l = l.min(1.0).max(0.0);
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let h_prime = h / 60.0;
+    let x = c * (1.0 - (h_prime % 2.0 - 1.0).abs());
+    let (r1, g1, b1) = match h_prime {
+        0.0..=1.001 => (c, x, 0.0),
+        1.0..=2.001 => (x, c, 0.0),
+        2.0..=3.001 => (0.0, c, x),
+        3.0..=4.001 => (0.0, x, c),
+        4.0..=5.001 => (x, 0.0, c),
+        5.0..=6.001 => (c, 0.0, x),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    let (r, g, b) = (r1 + m, g1 + m, b1 + m);
+    // log(&format!("{} {} {}", r, g, b));
+    ((r * 16.0) as u16) << 8 | ((g * 16.0) as u16) << 4 | ((b * 16.0) as u16)
 }
