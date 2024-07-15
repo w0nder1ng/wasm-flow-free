@@ -219,7 +219,7 @@ impl Board {
         // 6: left-down, 7: right-up, 8: right-down, 9: up-down, 10: unconnected
         let mut board = Self::new(width, height);
         let mut rng = thread_rng();
-        const WEIGHTS: [f32; 10] = [-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0];
+        const WEIGHTS: [f32; 10] = [-1.0, -1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0];
         let grid_w = (width + 2) as usize;
         let grid_h = (height + 2) as usize;
         let mut to_fill: Vec<Option<FlowDir>> = Vec::new();
@@ -1085,18 +1085,18 @@ impl Canvas {
 pub fn get_color_palette(size: i32) -> Vec<u16> {
     assert!(size > 0);
     // log(&format!("palette size: {}", size));
-    const CLASSIC_COLORS: [u16; 8] = [0xf00, 0xff0, 0x13f, 0x0a0, 0xa33, 0xfa0, 0x0ff, 0xf0c];
+    const CLASSIC_COLORS: [u16; 16] = [
+        0xf00, 0xff0, 0x13f, 0x0a0, 0xa33, 0xfa0, 0x0ff, 0xf0c, 0x808, 0xfff, 0xaaa, 0x0f0, 0xbb6,
+        0x008, 0x088, 0xf19,
+    ];
     const CONTRAST_COLORS: [u16; 25] = [
-        0xfaf, 0x7d, 0x930, 0x405, 0x053, 0x2c4, 0xfc9, 0x888, 0x9fb, 0x870, 0x9c0, 0xc08, 0x038,
+        0xfaf, 0x07d, 0x930, 0x405, 0x053, 0x2c4, 0xfc9, 0x888, 0x9fb, 0x870, 0x9c0, 0xc08, 0x038,
         0xfa0, 0xfab, 0x460, 0xf01, 0x5ff, 0x098, 0xef6, 0x70f, 0x900, 0xff8, 0xff0, 0xf50,
     ];
     let mut rng = thread_rng();
-    // TODO: change these back
-    if false {
-        //size < CLASSIC_COLORS.len() as i32 {
+    if size < CLASSIC_COLORS.len() as i32 {
         CLASSIC_COLORS[0..size as usize].to_vec()
-    } else if false {
-        //size < CONTRAST_COLORS.len() as i32 {
+    } else if size < CONTRAST_COLORS.len() as i32 {
         CONTRAST_COLORS
             .iter()
             .choose_multiple(&mut rng, size as usize)
@@ -1119,8 +1119,21 @@ pub fn get_color_palette(size: i32) -> Vec<u16> {
         colors.sort_unstable();
         colors.dedup();
         colors.shuffle(&mut rng);
+
+        if colors.len() < size as usize {
+            colors = Vec::with_capacity(11 * 11 * 11);
+            for r in 4..16 {
+                for g in 4..16 {
+                    for b in 4..16 {
+                        colors.push(r << 8 | g << 4 | b << 0);
+                    }
+                }
+            }
+            // log(&format!("silly path: {}", colors.len()));
+            colors.shuffle(&mut rng);
+        }
         colors.truncate(size as usize);
-        assert_eq!(size, colors.len() as i32);
+        assert_eq!(size, colors.len() as i32, "could not create enough colors");
         colors
     }
 }

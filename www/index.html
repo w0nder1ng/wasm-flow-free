@@ -50,8 +50,6 @@
                 return Uint8Array.from(binString, (m) => m.codePointAt(0));
             }
 
-            // navigator.setAppBadge(1);
-
             const draw = document.getElementById("draw");
             const ctx = draw.getContext("2d");
 
@@ -67,13 +65,11 @@
                 : Canvas.gen_new_board(grid_size, grid_size);
             if (window.location.search) {
                 let params = new URLSearchParams(window.location.search);
-                //console.log(params.toString());
                 if (!params.has("size") || !params.has("board")) {
                     console.log("Invalid URL");
                 } else {
                     let size = parseInt(params.get("size"));
                     const board = base64ToBytes(params.get("board"));
-                    console.log(board);
                     grid_size = size;
                     canvas.resize(size, size);
                     canvas.from_bytes(board);
@@ -85,7 +81,6 @@
                 }
             }
             gridsize.setAttribute("placeholder", grid_size);
-            // const canvas = Canvas.gen_filled_board(grid_size, grid_size);
 
             let buffer = new Uint8ClampedArray(
                 memory.buffer,
@@ -103,7 +98,6 @@
             canvas.render();
 
             let currently_focused = null;
-            // Canvas.gen_new_board(4, 4);
             let is_mouse_down = false;
             function attemptConnection(delta) {
                 // if adding a connection fails, attempt to remove a connection; update position if either succeeds
@@ -145,7 +139,6 @@
             function mmHandler(e) {
                 let clientX = e.touches ? e.touches[0].clientX : e.clientX;
                 let clientY = e.touches ? e.touches[0].clientY : e.clientY;
-                //console.log(clientX, clientY);
                 let box = canvas.box_at(
                     clientX - draw.getBoundingClientRect().left,
                     clientY - draw.getBoundingClientRect().top,
@@ -222,7 +215,6 @@
                 let params = new URLSearchParams();
                 let board = canvas.to_bytes();
                 let b64 = bytesToBase64(board);
-                console.log(b64);
                 params.set("board", b64);
                 params.set("size", grid_size);
                 await navigator.clipboard.writeText(
@@ -251,7 +243,6 @@
                 );
 
                 canvas.render();
-                console.log("hi");
             });
 
             newbtn.addEventListener("click", function () {
