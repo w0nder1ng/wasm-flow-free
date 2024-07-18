@@ -42,6 +42,43 @@ pub enum FlowDir {
 }
 
 impl FlowDir {
+    pub const NBR_DIRS: [FlowDir; 4] = [FlowDir::Left, FlowDir::Right, FlowDir::Up, FlowDir::Down];
+    pub const ALL_DIRS: [FlowDir; 11] = [
+        FlowDir::Left,
+        FlowDir::Right,
+        FlowDir::Up,
+        FlowDir::Down,
+        FlowDir::LeftRight,
+        FlowDir::LeftUp,
+        FlowDir::LeftDown,
+        FlowDir::RightUp,
+        FlowDir::RightDown,
+        FlowDir::UpDown,
+        FlowDir::Detached,
+    ];
+    pub fn grid_str(grid: Vec<FlowDir>, width: usize) -> String {
+        let char_map = |dir| match dir {
+            FlowDir::Left => '<',
+            FlowDir::Right => '>',
+            FlowDir::Up => '^',
+            FlowDir::Down => 'v',
+            FlowDir::LeftRight => '-',
+            FlowDir::LeftUp => '⅃',
+            FlowDir::LeftDown => '⅂',
+            FlowDir::RightUp => 'L',
+            FlowDir::RightDown => 'f',
+            FlowDir::UpDown => '|',
+            FlowDir::Detached => ' ',
+        };
+        let mut res = String::new();
+        for pos in 0..grid.len() {
+            res.push(char_map(grid[pos]));
+            if pos % width == width - 1 {
+                res.push('\n');
+            }
+        }
+        res
+    }
     pub const fn num_connections(self) -> usize {
         (self as u8).count_ones() as usize
     }
@@ -63,21 +100,48 @@ impl FlowDir {
         }
         FlowDir::try_from((self as u8 & !(other_direction as u8)) as u32).unwrap()
     }
-
-    const fn mask(self) -> u32 {
-        1 << match self {
-            FlowDir::Left => 0,
-            FlowDir::Right => 1,
-            FlowDir::Up => 2,
-            FlowDir::Down => 3,
-            FlowDir::LeftRight => 4,
-            FlowDir::LeftUp => 5,
-            FlowDir::LeftDown => 6,
-            FlowDir::RightUp => 7,
-            FlowDir::RightDown => 8,
-            FlowDir::UpDown => 9,
-            FlowDir::Detached => 10,
+    const fn nbr_of(self, index: usize, width: usize, height: usize) -> Option<usize> {
+        match self {
+            FlowDir::Left => {
+                if index % width == 0 {
+                    None
+                } else {
+                    Some(index - 1)
+                }
+            }
+            FlowDir::Right => {
+                if index % width == width - 1 {
+                    None
+                } else {
+                    Some(index + 1)
+                }
+            }
+            FlowDir::Up => {
+                if index / width == 0 {
+                    None
+                } else {
+                    Some(index - width)
+                }
+            }
+            FlowDir::Down => {
+                if index / width == height - 1 {
+                    None
+                } else {
+                    Some(index + width)
+                }
+            }
+            _ => panic!("tried to get neighbor for non-cardinal direction"),
         }
+    }
+    const fn mask(self) -> u32 {
+        #[rustfmt::skip]
+        let res = 1 << match self {
+        FlowDir::Left => 0,     FlowDir::Right => 1,     FlowDir::Up => 2,
+        FlowDir::Down => 3,     FlowDir::LeftRight => 4, FlowDir::LeftUp => 5,
+        FlowDir::LeftDown => 6, FlowDir::RightUp => 7,   FlowDir::RightDown => 8,
+        FlowDir::UpDown => 9,   FlowDir::Detached => 10,
+        };
+        res
     }
     pub fn rev(self) -> Self {
         match self {
@@ -202,6 +266,7 @@ fn softmax(ins: Vec<f32>) -> Vec<f32> {
         .map(|val| val / total)
         .collect()
 }
+
 impl Board {
     pub fn new(width: i32, height: i32) -> Self {
         if width <= 0 || height <= 0 || width * height < 2 {
@@ -214,20 +279,20 @@ impl Board {
             fills,
         }
     }
-    pub fn gen_filled_board(width: i32, height: i32) -> Self {
-        // 0: left, 1: right, 2: up, 3: down, 4: left-right, 5: left-up,
-        // 6: left-down, 7: right-up, 8: right-down, 9: up-down, 10: unconnected
-        let mut board = Self::new(width, height);
+    pub fn as_dirs_grid(&self) -> Vec<FlowDir> {
+        self.fills.iter().map(|val| val.dirs).collect()
+    }
+    fn wfc_gen_dirty(width: usize, height: usize) -> Vec<FlowDir> {
         let mut rng = thread_rng();
-        const WEIGHTS: [f32; 10] = [-1.0, -1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0];
-        let grid_w = (width + 2) as usize;
-        let grid_h = (height + 2) as usize;
+        const WEIGHTS: [f32; 10] = [-1.0, -1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.5, 1.5];
+        let grid_w = width + 2;
+        let grid_h = height + 2;
         let mut to_fill: Vec<Option<FlowDir>> = Vec::new();
         for num_iters in 0.. {
             if num_iters > 1_000 {
                 panic!("failed to generate");
             }
-            to_fill = vec![None; (grid_w * grid_h) as usize];
+            to_fill = vec![None; grid_w * grid_h];
             let mut all_candidates: Vec<u32> = vec![0b1111111111; grid_w * grid_h];
             let mut num_open: i32 = all_candidates.len() as i32;
             for i in 0..to_fill.len() {
@@ -263,7 +328,7 @@ impl Board {
                 let possible: u32 = all_candidates[candidate];
                 #[rustfmt::skip]
                 let nbrs = [candidate - 1, candidate + 1, candidate - grid_w, candidate + grid_w];
-                let dirs = [FlowDir::Left, FlowDir::Right, FlowDir::Up, FlowDir::Down];
+                let dirs = FlowDir::NBR_DIRS;
 
                 if possible != 0 {
                     // log(&format!("0b{:010b}", possible));
@@ -287,20 +352,7 @@ impl Board {
                             .try_into()
                             .unwrap(),
                     ));
-                    to_fill[candidate] = Some(
-                        [
-                            FlowDir::Left,
-                            FlowDir::Right,
-                            FlowDir::Up,
-                            FlowDir::Down,
-                            FlowDir::LeftRight,
-                            FlowDir::LeftUp,
-                            FlowDir::LeftDown,
-                            FlowDir::RightUp,
-                            FlowDir::RightDown,
-                            FlowDir::UpDown,
-                        ][choice],
-                    );
+                    to_fill[candidate] = Some(FlowDir::ALL_DIRS[choice]);
                     num_open -= 1;
                     for (&possible_neighbor, &change_dir) in nbrs.iter().zip(dirs.iter()) {
                         let dir = to_fill[candidate].unwrap();
@@ -328,139 +380,173 @@ impl Board {
                 break;
             }
         }
-        // divvy into paths and break up loops
-        // TODO: break up loops/self-intersections
+        let no_borders: Option<Vec<FlowDir>> = to_fill
+            .into_iter()
+            .filter(|dir| {
+                if let Some(FlowDir::Detached) = dir {
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect();
+        no_borders.expect("only breaks from loop if no None values")
+    }
+
+    fn get_paths(dirs_grid: &Vec<FlowDir>, width: usize, height: usize) -> Vec<Vec<usize>> {
+        // NOTE: this is no longer in sorted order, so we have to think about that
         let mut paths: Vec<Vec<usize>> = Vec::new();
-        let mut checked = bitvec![0; grid_w*grid_h];
-        let dirs = [FlowDir::Left, FlowDir::Right, FlowDir::Up, FlowDir::Down];
-
-        for (i, val) in to_fill.iter().enumerate() {
-            if let Some(FlowDir::Detached) = val {
-                checked.set(i, true);
-            }
-        }
-        while checked.count_zeros() > 0 {
-            let mut pos_iter = checked.iter().enumerate().filter(|(i, b)| {
-                !**b && to_fill[*i].unwrap_or(FlowDir::Detached).num_connections() == 1
-            });
-            let mut pos = match pos_iter.next() {
-                Some((pos, _)) => pos,
-                None => break,
-            };
-            assert!(to_fill[pos].unwrap().num_connections() == 1);
+        let mut checked = bitvec![0; (width*height as usize)];
+        while checked.count_zeros() != 0 {
+            let mut to_visit = vec![checked.leading_ones()];
             let mut intermediate: Vec<usize> = Vec::new();
-
-            while !checked[pos] {
+            while !to_visit.is_empty() {
+                let pos = to_visit.pop().unwrap();
+                if checked[pos] {
+                    continue;
+                }
                 checked.set(pos, true);
                 intermediate.push(pos);
-                let nbrs = [pos - 1, pos + 1, pos - grid_w, pos + grid_w];
-                if let Some(flow_dir) = to_fill[pos] {
-                    for (&dir, nbr) in dirs.iter().zip(nbrs.iter()) {
-                        if flow_dir.is_connected(dir) && !checked[*nbr] {
-                            pos = *nbr;
-                            continue;
+                let flow_dir = dirs_grid[pos];
+                for dir in FlowDir::NBR_DIRS {
+                    if let Some(nbr) = dir.nbr_of(pos, width, height) {
+                        if flow_dir.is_connected(dir) && !checked[nbr] {
+                            to_visit.push(nbr);
                         }
                     }
                 }
             }
-            paths.push(intermediate);
+            paths.push(intermediate)
         }
-        // TODO: make this apply to all loops
-        // this breaks up only one loop
-        // hopefully shouldn't be now
-        while checked.count_zeros() > 0 {
-            // log("found loop!");
-            let start_pos = checked
+        paths
+    }
+    fn split_loops_and_intersects(
+        dirs_grid: &mut Vec<FlowDir>,
+        paths: &mut Vec<Vec<usize>>,
+        width: usize,
+        height: usize,
+    ) {
+        let mut created_paths = Vec::new();
+        for path in &mut *paths {
+            if path
                 .iter()
-                .enumerate()
-                .filter(|(_, b)| !**b)
-                .choose(&mut rng);
-            let start_pos = start_pos.unwrap().0;
-            let mut chosen_pos = vec![start_pos];
-            let mut chosen_dirs = Vec::new();
-
-            while !checked[*chosen_pos.last().unwrap()] {
-                let pos = *chosen_pos.last().unwrap();
-                checked.set(pos, true);
-                let nbrs = [pos - 1, pos + 1, pos - grid_w, pos + grid_w];
-                let dirs = [FlowDir::Left, FlowDir::Right, FlowDir::Up, FlowDir::Down];
-                let first = nbrs
+                .map(|&pos| dirs_grid[pos])
+                .any(|dir| dir.num_connections() == 1)
+            {
+                continue; // the path has an endpoint
+            }
+            // log("loop found!");
+            // because it's a dfs on a loop, the elements must be in order
+            let path_start = (0, 1);
+            let path_middle = (path.len() / 2, path.len() / 2 + 1);
+            for pair in [path_start, path_middle] {
+                let break_0_a = path[pair.0];
+                let break_0_b = path[pair.1];
+                let dir_connected_in = *FlowDir::NBR_DIRS
                     .iter()
-                    .zip(dirs.iter())
-                    .filter(|(nbr, delta)| {
-                        !checked[**nbr] && to_fill[pos].unwrap().is_connected(**delta)
+                    .filter(|dir| dir.nbr_of(break_0_a, width, height) == Some(break_0_b))
+                    .next()
+                    .unwrap(); // only one direction where both are connected to each other
+                dirs_grid[break_0_a] = dirs_grid[break_0_a].remove_connection(dir_connected_in);
+                dirs_grid[break_0_b] =
+                    dirs_grid[break_0_b].remove_connection(dir_connected_in.rev());
+            }
+            let new_path_section: Vec<usize> =
+                path.drain((path_start.1)..=(path_middle.0)).collect();
+            created_paths.push(new_path_section);
+        }
+        paths.append(&mut created_paths);
+        'outer: loop {
+            for path in &mut *paths {
+                let mut val = path.iter().enumerate().filter(|(_, pos)| {
+                    FlowDir::NBR_DIRS.iter().any(|dir| {
+                        !dirs_grid[**pos].is_connected(*dir)
+                            && dir
+                                .nbr_of(**pos, width, height)
+                                .is_some_and(|nbr| path.contains(&nbr))
                     })
-                    .next();
-                let Some(first) = first else {
-                    break;
-                };
-                chosen_dirs.push(*first.1);
-                chosen_pos.push(*first.0);
-            }
-            let last_pos = *chosen_pos.last().unwrap();
-            let last_nbrs = [
-                last_pos - 1,
-                last_pos + 1,
-                last_pos - grid_w,
-                last_pos + grid_w,
-            ];
-            let dirs = [FlowDir::Left, FlowDir::Right, FlowDir::Up, FlowDir::Down];
-            let last_dir = *dirs
-                .iter()
-                .zip(last_nbrs.iter())
-                .filter(|(_, nbr)| **nbr == start_pos)
-                .next()
-                .unwrap()
-                .0;
-            to_fill[last_pos] = Some(to_fill[last_pos].unwrap().remove_connection(last_dir));
-            to_fill[start_pos] = Some(
-                to_fill[start_pos]
-                    .unwrap()
-                    .remove_connection(last_dir.rev()),
-            );
+                });
+                if let Some(_) = val.next() {
+                    let start = path
+                        .iter()
+                        .copied()
+                        .filter(|pos| dirs_grid[*pos].num_connections() == 1)
+                        .next()
+                        .unwrap();
+                    let mut visited = vec![start];
+                    // println!("{}: {:?}", start, path);
+                    // println!("{}", FlowDir::grid_str(dirs_grid.clone(), width));
+                    loop {
+                        let pos = *visited.last().unwrap();
+                        let next = FlowDir::NBR_DIRS
+                            .iter()
+                            .filter_map(|dir| {
+                                if dirs_grid[pos].is_connected(*dir) {
+                                    dir.nbr_of(pos, width, height).and_then(|val| {
+                                        match visited.contains(&val) {
+                                            true => None,
+                                            false => Some(val),
+                                        }
+                                    })
+                                } else {
+                                    None
+                                }
+                            })
+                            .next();
+                        if next.is_none() {
+                            break;
+                        }
+                        let next = next.unwrap();
+                        visited.push(next);
+                    }
+                    let break_pos = visited.len() / 2;
+                    let break_start = visited[break_pos - 1];
+                    let break_end = visited[break_pos];
 
-            let middle = chosen_pos.len() / 2;
-            let middle_pos_a = chosen_pos[middle];
-            let middle_pos_b = chosen_pos[middle + 1];
-            let middle_dir = chosen_dirs[middle];
-            to_fill[middle_pos_a] =
-                Some(to_fill[middle_pos_a].unwrap().remove_connection(middle_dir));
-            to_fill[middle_pos_b] = Some(
-                to_fill[middle_pos_b]
-                    .unwrap()
-                    .remove_connection(middle_dir.rev()),
-            );
-            let mut old_vec = chosen_pos;
-            let new_split = old_vec.split_off(middle + 1);
-            paths.push(old_vec);
-            paths.push(new_split);
-        }
-        for i in 0..to_fill.len() {
-            to_fill[i] = Some(to_fill[i].unwrap_or(FlowDir::Detached));
-        }
-        for grid_r in 1..grid_w - 1 {
-            for grid_c in 1..grid_h - 1 {
-                let board_pos = (grid_c - 1) + (grid_r - 1) * (width as usize);
-                board.fills[board_pos] = match to_fill[grid_c + grid_r * grid_w] {
-                    Some(dirs) => Fill::new(
-                        0xfff,
-                        match dirs.num_connections() {
-                            1 => Flow::Dot,
-                            2 => Flow::Line,
-                            0 => Flow::Empty,
-                            _ => panic!("illegal number of connections when generating board"),
-                        },
-                        dirs,
-                    ),
-                    None => Default::default(),
-                };
+                    let dir_connected_in = *FlowDir::NBR_DIRS
+                        .iter()
+                        .filter(|dir| dir.nbr_of(break_end, width, height) == Some(break_start))
+                        .next()
+                        .unwrap(); // only one direction where both are connected to each other
+                    dirs_grid[break_end] = dirs_grid[break_end].remove_connection(dir_connected_in);
+                    dirs_grid[break_start] =
+                        dirs_grid[break_start].remove_connection(dir_connected_in.rev());
+                    path.clear();
+                    let new_vec = visited.split_off(break_pos);
+                    path.append(&mut visited);
+                    created_paths.push(new_vec);
+                    continue 'outer;
+                }
             }
+            break;
+        }
+        paths.append(&mut created_paths);
+    }
+
+    pub fn gen_filled_board(width: i32, height: i32) -> Self {
+        // 0: left, 1: right, 2: up, 3: down, 4: left-right, 5: left-up,
+        // 6: left-down, 7: right-up, 8: right-down, 9: up-down, 10: unconnected
+        let mut board = Self::new(width, height); // guarantees width/height are positive
+        let (width, height) = (width as usize, height as usize);
+        let mut dirs_dirty = Self::wfc_gen_dirty(width, height);
+        let mut paths = Self::get_paths(&dirs_dirty, width, height);
+        Self::split_loops_and_intersects(&mut dirs_dirty, &mut paths, width, height);
+        for i in 0..dirs_dirty.len() {
+            board.fills[i] = Fill::new(
+                0xfff,
+                match dirs_dirty[i].num_connections() {
+                    1 => Flow::Dot,
+                    2 => Flow::Line,
+                    0 => Flow::Empty,
+                    _ => panic!("illegal number of connections when generating board"),
+                },
+                dirs_dirty[i],
+            )
         }
         let palette = get_color_palette(paths.len() as i32);
         for (i, path) in paths.iter().enumerate() {
             for pos in path {
-                let board_pos = pos - grid_w - 2 * (pos / grid_w - 1) - 1;
-                board.fills[board_pos].color = palette[i];
+                board.fills[*pos].color = palette[i];
             }
         }
 
@@ -485,7 +571,6 @@ impl Board {
 
     fn flood_search(&self, pos: i32) -> (BitVec, i32) {
         // traverse from a starting dot, returning when another dot is reached or the path runs out
-        // TODO: replace with a bitvec
         let mut explored = bitvec![0; (self.width * self.height) as usize]; //vec![false; (self.width * self.height) as usize];
         match self.fills[pos as usize].flow {
             Flow::Dot => (),

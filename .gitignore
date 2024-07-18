@@ -6,3 +6,4 @@ wasm-pack.log
 .DS_Store
 .zed/
 default.profraw
+.ruff.toml

@@ -1,13 +1,14 @@
-from PIL import Image
-import numpy as np
 from sys import argv
+
+import numpy as np
+from PIL import Image
 
 
 def sprite_sheet_to_arr(file_path, sprite_size, sprite_count=None):
     img = Image.open(file_path)
     img_width, img_height = img.size
     sprite_width, sprite_height = sprite_size
-    sprites = [   ]
+    sprites = []
 
     for y in range(0, img_height, sprite_height):
         for x in range(0, img_width, sprite_width):
@@ -36,8 +37,6 @@ def main():
             break
         with open(f"src/sprites/{i}", "wb") as f:
             f.write(bytearray(sprite))
-
-
 
 
 if __name__ == "__main__":
