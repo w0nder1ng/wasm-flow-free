@@ -1180,14 +1180,18 @@ pub fn get_color_palette(size: i32) -> Vec<u16> {
     ];
     let mut rng = thread_rng();
     if size < CLASSIC_COLORS.len() as i32 {
-        CLASSIC_COLORS[0..size as usize].to_vec()
+        let mut res = CLASSIC_COLORS[0..size as usize].to_vec();
+        res.shuffle(&mut rng);
+        res
     } else if size < CONTRAST_COLORS.len() as i32 {
-        CONTRAST_COLORS
+        let mut res: Vec<u16> = CONTRAST_COLORS
             .iter()
             .choose_multiple(&mut rng, size as usize)
             .iter()
             .map(|&&x| x)
-            .collect()
+            .collect();
+        res.shuffle(&mut rng);
+        res
     } else {
         let mut colors = Vec::with_capacity(size as usize);
 
