@@ -7,3 +7,5 @@ wasm-pack.log
 .zed/
 default.profraw
 .ruff.toml
+www/pkg/README.md
+www/pkg/package.json
