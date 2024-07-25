@@ -122,60 +122,20 @@
             function mdHandler(e) {
                 e.preventDefault();
                 let rect = draw.getBoundingClientRect();
-
-                let x =
-                    (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
-                let y =
-                    (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
-                currently_focused = canvas.box_md(x, y);
-                if (currently_focused) {
-                    canvas.clear_pipe(currently_focused);
-                    is_mouse_down = true;
-                }
+                let x = (e.touches ? e.touches[0] : e).clientX - rect.left;
+                let y = (e.touches ? e.touches[0] : e).clientY - rect.top;
+                canvas.handle_md([x, y]);
             }
             function muHandler(e) {
-                is_mouse_down = false;
+                canvas.handle_mu();
             }
             function mmHandler(e) {
                 let clientX = e.touches ? e.touches[0].clientX : e.clientX;
                 let clientY = e.touches ? e.touches[0].clientY : e.clientY;
-                let box = canvas.box_at(
+                canvas.handle_mm([
                     clientX - draw.getBoundingClientRect().left,
                     clientY - draw.getBoundingClientRect().top,
-                );
-                if (box && currently_focused && is_mouse_down) {
-                    if (
-                        box[0] == currently_focused[0] &&
-                        box[1] == currently_focused[1]
-                    ) {
-                        return;
-                    }
-                    let delta = 999;
-                    if (
-                        box[0] == currently_focused[0] &&
-                        box[1] == currently_focused[1] - 1
-                    ) {
-                        delta = 2;
-                    } else if (
-                        box[0] == currently_focused[0] &&
-                        box[1] == currently_focused[1] + 1
-                    ) {
-                        delta = 3;
-                    } else if (
-                        box[0] == currently_focused[0] - 1 &&
-                        box[1] == currently_focused[1]
-                    ) {
-                        delta = 0;
-                    } else if (
-                        box[0] == currently_focused[0] + 1 &&
-                        box[1] == currently_focused[1]
-                    ) {
-                        delta = 1;
-                    }
-                    if (delta != 999) {
-                        attemptConnection(delta);
-                    }
-                }
+                ]);
                 e.preventDefault();
             }
 
@@ -191,24 +151,18 @@
 
             window.addEventListener("keydown", function (e) {
                 let key = e.key;
-                if (currently_focused) {
-                    let delta = 999;
-                    if (key === "ArrowUp" || key === "w") {
-                        e.preventDefault();
-                        delta = 2;
-                    } else if (key === "ArrowDown" || key === "s") {
-                        e.preventDefault();
-                        delta = 3;
-                    } else if (key === "ArrowLeft" || key === "a") {
-                        e.preventDefault();
-                        delta = 0;
-                    } else if (key === "ArrowRight" || key === "d") {
-                        e.preventDefault();
-                        delta = 1;
-                    }
-                    if (delta != 999) {
-                        attemptConnection(delta);
-                    }
+                if (key === "ArrowUp" || key === "w") {
+                    e.preventDefault();
+                    canvas.handle_keypress("w");
+                } else if (key === "ArrowDown" || key === "s") {
+                    e.preventDefault();
+                    canvas.handle_keypress("s");
+                } else if (key === "ArrowLeft" || key === "a") {
+                    e.preventDefault();
+                    canvas.handle_keypress("a");
+                } else if (key === "ArrowRight" || key === "d") {
+                    e.preventDefault();
+                    canvas.handle_keypress("d");
                 }
             });
             copybtn.addEventListener("click", async function () {

@@ -41,15 +41,30 @@ export class Canvas {
 /**
 * @param {number} x
 * @param {number} y
-* @returns {Int32Array | undefined}
+* @returns {Uint32Array | undefined}
 */
-  box_at(x: number, y: number): Int32Array | undefined;
+  box_at(x: number, y: number): Uint32Array | undefined;
+/**
+* @param {Int32Array} pos
+*/
+  handle_md(pos: Int32Array): void;
+/**
+*/
+  handle_mu(): void;
+/**
+* @param {Int32Array} pos
+*/
+  handle_mm(pos: Int32Array): void;
+/**
+* @param {string} keypress
+*/
+  handle_keypress(keypress: string): void;
 /**
 * @param {number} x
 * @param {number} y
-* @returns {Int32Array | undefined}
+* @returns {Uint32Array | undefined}
 */
-  box_md(x: number, y: number): Int32Array | undefined;
+  box_md(x: number, y: number): Uint32Array | undefined;
 /**
 * @param {Int32Array} pos
 */
@@ -137,6 +152,10 @@ export interface InitOutput {
   readonly canvas_canvas_height: (a: number) => number;
   readonly canvas_canvas_width: (a: number) => number;
   readonly canvas_box_at: (a: number, b: number, c: number, d: number) => void;
+  readonly canvas_handle_md: (a: number, b: number, c: number) => void;
+  readonly canvas_handle_mu: (a: number) => void;
+  readonly canvas_handle_mm: (a: number, b: number, c: number) => void;
+  readonly canvas_handle_keypress: (a: number, b: number, c: number) => void;
   readonly canvas_box_md: (a: number, b: number, c: number, d: number) => void;
   readonly canvas_clear_pipe: (a: number, b: number, c: number) => void;
   readonly canvas_add_connection: (a: number, b: number, c: number, d: number) => number;
