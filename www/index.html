@@ -152,18 +152,17 @@
             window.addEventListener("keydown", function (e) {
                 let key = e.key;
                 if (key === "ArrowUp" || key === "w") {
-                    e.preventDefault();
                     canvas.handle_keypress("w");
                 } else if (key === "ArrowDown" || key === "s") {
-                    e.preventDefault();
                     canvas.handle_keypress("s");
                 } else if (key === "ArrowLeft" || key === "a") {
-                    e.preventDefault();
                     canvas.handle_keypress("a");
                 } else if (key === "ArrowRight" || key === "d") {
-                    e.preventDefault();
                     canvas.handle_keypress("d");
+                } else {
+                    return;
                 }
+                e.preventDefault();
             });
             copybtn.addEventListener("click", async function () {
                 let params = new URLSearchParams();
