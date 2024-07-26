@@ -1269,22 +1269,9 @@ pub fn get_color_palette(size: i32) -> Vec<u16> {
         0xf00, 0xff0, 0x13f, 0x0a0, 0xa33, 0xfa0, 0x0ff, 0xf0c, 0x808, 0xfff, 0xaaa, 0x0f0, 0xbb6,
         0x008, 0x088, 0xf19,
     ];
-    const CONTRAST_COLORS: [u16; 25] = [
-        0xfaf, 0x07d, 0x930, 0x405, 0x053, 0x2c4, 0xfc9, 0x888, 0x9fb, 0x870, 0x9c0, 0xc08, 0x038,
-        0xfa0, 0xfab, 0x460, 0xf01, 0x5ff, 0x098, 0xef6, 0x70f, 0x900, 0xff8, 0xff0, 0xf50,
-    ];
     let mut rng = thread_rng();
     if size < CLASSIC_COLORS.len() as i32 {
         let mut res = CLASSIC_COLORS[0..size as usize].to_vec();
-        res.shuffle(&mut rng);
-        res
-    } else if size < CONTRAST_COLORS.len() as i32 {
-        let mut res: Vec<u16> = CONTRAST_COLORS
-            .iter()
-            .choose_multiple(&mut rng, size as usize)
-            .iter()
-            .map(|&&x| x)
-            .collect();
         res.shuffle(&mut rng);
         res
     } else {
