@@ -1046,7 +1046,6 @@ impl Canvas {
         }
     }
     pub fn handle_keypress(&mut self, keypress: String) {
-        log(&keypress);
         let delta = match keypress.chars().next() {
             Some('a') => FlowDir::Left,
             Some('d') => FlowDir::Right,
@@ -1057,12 +1056,10 @@ impl Canvas {
         let Some((current_x, current_y)) = self.current_pos else {
             return;
         };
-        log("have current pos");
         let pos_a = current_x + current_y * self.board.width;
         let Some(pos_b) = delta.nbr_of(pos_a, self.board.width, self.board.height) else {
             return;
         };
-        log("no early return");
         if self.board.fills[pos_a].flow != Flow::Empty {
             // lazily evaluated, so either one or the other will happen
             let res = self.board.add_connection(pos_a, pos_b)

@@ -151,18 +151,10 @@
 
             window.addEventListener("keydown", function (e) {
                 let key = e.key;
-                if (key === "ArrowUp" || key === "w") {
-                    canvas.handle_keypress("w");
-                } else if (key === "ArrowDown" || key === "s") {
-                    canvas.handle_keypress("s");
-                } else if (key === "ArrowLeft" || key === "a") {
-                    canvas.handle_keypress("a");
-                } else if (key === "ArrowRight" || key === "d") {
-                    canvas.handle_keypress("d");
-                } else {
-                    return;
+                if ("wasd".indexOf(key) > -1) {
+                    canvas.handle_keypress(key);
+                    e.preventDefault();
                 }
-                e.preventDefault();
             });
             copybtn.addEventListener("click", async function () {
                 let params = new URLSearchParams();
