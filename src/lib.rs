@@ -449,10 +449,8 @@ impl Board {
             for pair in [path_start, path_middle] {
                 let break_0_a = path[pair.0];
                 let break_0_b = path[pair.1];
-                let dir_connected_in = *FlowDir::NBR_DIRS
-                    .iter()
-                    .find(|dir| dir.nbr_of(break_0_a, width, height) == Some(break_0_b))
-                    .unwrap(); // only one direction where both are connected to each other
+                let dir_connected_in =
+                    FlowDir::change_dir(break_0_a, break_0_b, width, height).unwrap();
                 dirs_grid[break_0_a] = dirs_grid[break_0_a].remove_connection(dir_connected_in);
                 dirs_grid[break_0_b] =
                     dirs_grid[break_0_b].remove_connection(dir_connected_in.rev());
@@ -508,10 +506,8 @@ impl Board {
                     let break_start = visited[break_pos - 1];
                     let break_end = visited[break_pos];
 
-                    let dir_connected_in = *FlowDir::NBR_DIRS
-                        .iter()
-                        .find(|dir| dir.nbr_of(break_end, width, height) == Some(break_start))
-                        .unwrap(); // only one direction where both are connected to each other
+                    let dir_connected_in =
+                        FlowDir::change_dir(break_start, break_end, width, height).unwrap();
                     dirs_grid[break_end] = dirs_grid[break_end].remove_connection(dir_connected_in);
                     dirs_grid[break_start] =
                         dirs_grid[break_start].remove_connection(dir_connected_in.rev());
