@@ -11,3 +11,6 @@ This project uses [wasm-pack](https://rustwasm.github.io/docs/wasm-pack/) to com
 - better editor
 - pre-generated levels list
 - better win screen/general UI
+- looser tracking for mouse position
+- effective serialization for very large boards
+- validity checking for board imports

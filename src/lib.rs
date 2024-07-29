@@ -6,7 +6,7 @@ use rand::{
     thread_rng,
 };
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     convert::{TryFrom, TryInto},
     f32::consts::E,
 };
@@ -24,7 +24,7 @@ extern "C" {
     #[wasm_bindgen(js_namespace = console)]
     fn log(s: &str);
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum FlowDir {
     #[default]
@@ -227,7 +227,7 @@ impl TryFrom<u32> for FlowDir {
         }
     }
 }
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
 #[repr(u8)]
 
 pub enum Flow {
@@ -237,7 +237,7 @@ pub enum Flow {
     Empty = 0,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Fill {
     color: u16,
     flow: Flow,
@@ -433,6 +433,7 @@ impl Board {
         width: usize,
         height: usize,
     ) {
+        // log("entered loop splitter");
         let mut created_paths = Vec::new();
         for path in &mut *paths {
             if path
@@ -460,7 +461,8 @@ impl Board {
             created_paths.push(new_path_section);
         }
         paths.append(&mut created_paths);
-        'outer: loop {
+        // log("entered path fixer");
+        'outer: for num_iters in 0.. {
             for path in &mut *paths {
                 let mut val = path.iter().enumerate().filter(|(_, pos)| {
                     FlowDir::NBR_DIRS.iter().any(|dir| {
@@ -471,22 +473,27 @@ impl Board {
                     })
                 });
                 if val.next().is_some() {
-                    let start = path
+                    if num_iters > 10_000 {
+                        log("failure");
+                        break 'outer;
+                    }
+                    let start = *path
                         .iter()
-                        .copied()
-                        .find(|pos| dirs_grid[*pos].num_connections() == 1)
+                        .find(|pos| dirs_grid[**pos].num_connections() == 1)
                         .unwrap();
-                    let mut visited = vec![start];
+                    let mut queue = vec![start];
+                    let mut visited = bitvec![0; dirs_grid.len()];
                     // println!("{}: {:?}", start, path);
                     // println!("{}", FlowDir::grid_str(dirs_grid.clone(), width));
                     loop {
-                        let pos = *visited.last().unwrap();
+                        let pos = *queue.last().unwrap();
+                        visited.set(pos, true);
                         let next = FlowDir::NBR_DIRS
                             .iter()
                             .filter_map(|dir| {
                                 if dirs_grid[pos].is_connected(*dir) {
                                     dir.nbr_of(pos, width, height).and_then(|val| {
-                                        match visited.contains(&val) {
+                                        match visited[val] {
                                             true => None,
                                             false => Some(val),
                                         }
@@ -500,27 +507,35 @@ impl Board {
                             break;
                         }
                         let next = next.unwrap();
-                        visited.push(next);
+                        queue.push(next);
                     }
-                    let break_pos = visited.len() / 2;
-                    let break_start = visited[break_pos - 1];
-                    let break_end = visited[break_pos];
+                    let break_pos = queue.len() / 2;
+                    let break_start = queue[break_pos - 1];
+                    let break_end = queue[break_pos];
 
                     let dir_connected_in =
                         FlowDir::change_dir(break_start, break_end, width, height).unwrap();
-                    dirs_grid[break_end] = dirs_grid[break_end].remove_connection(dir_connected_in);
                     dirs_grid[break_start] =
-                        dirs_grid[break_start].remove_connection(dir_connected_in.rev());
+                        dirs_grid[break_start].remove_connection(dir_connected_in);
+                    dirs_grid[break_end] =
+                        dirs_grid[break_end].remove_connection(dir_connected_in.rev());
+
+                    let new_vec = queue.split_off(break_pos);
                     path.clear();
-                    let new_vec = visited.split_off(break_pos);
-                    path.append(&mut visited);
+                    path.append(&mut queue);
                     created_paths.push(new_vec);
+                    log(&format!(
+                        "broke an intersect at {}x{}",
+                        break_start % width,
+                        break_start / width
+                    ));
                     continue 'outer;
                 }
             }
             break;
         }
         paths.append(&mut created_paths);
+        // log("exited loop/intersect");
     }
 
     pub fn gen_filled_board(width: usize, height: usize) -> Self {
@@ -553,7 +568,16 @@ impl Board {
 
         board
     }
-
+    fn verify_valid(&self) -> bool {
+        // TODO: implement logic, make an error type, potentially do error correction for basic errors
+        // no more than 2 dots of the same color
+        // no connections which aren't a pair
+        // no connections to a different color
+        // no loops
+        // no paths that are next to themselves
+        // no flows that aren't connected to a dot
+        todo!()
+    }
     pub fn get_fill(&self, x: usize, y: usize) -> Fill {
         self.fills[y * self.width + x]
     }
@@ -838,6 +862,7 @@ impl Board {
 pub struct Canvas {
     board: Board,
     pix_buf: Vec<u8>,
+    rendered_flow_cache: HashMap<Fill, [u32; FLOW_SIZE * FLOW_SIZE]>,
     current_pos: Option<(usize, usize)>,
     is_mouse_down: bool,
 }
@@ -845,10 +870,7 @@ pub struct Canvas {
 #[wasm_bindgen]
 impl Canvas {
     fn set_pix(buf: &mut [u8], loc: usize, color: u32) {
-        buf[loc * 4] = ((color >> 24) & 0xff) as u8; // red
-        buf[loc * 4 + 1] = ((color >> 16) & 0xff) as u8; // green
-        buf[loc * 4 + 2] = ((color >> 8) & 0xff) as u8; // blue
-        buf[loc * 4 + 3] = (color & 0xff) as u8; // alpha should just be 255 hopefully
+        buf[loc * 4..loc * 4 + 4].copy_from_slice(&color.to_be_bytes());
     }
 
     fn unpack_color(input: u16) -> u32 {
@@ -891,43 +913,55 @@ impl Canvas {
             ..Default::default()
         }
     }
-    fn render_flow(&mut self, fill: Fill, x: usize, y: usize) {
-        let sprite: &[u8; SPRITE_SIZE * SPRITE_SIZE] = match fill.flow {
-            Flow::Dot => match fill.dirs {
-                FlowDir::Detached => include_bytes!("sprites/0"),
-                FlowDir::Left => include_bytes!("sprites/1"),
-                FlowDir::Right => include_bytes!("sprites/2"),
-                FlowDir::Up => include_bytes!("sprites/3"),
-                FlowDir::Down => include_bytes!("sprites/4"),
-                _ => panic!("Invalid flow"),
-            },
-            Flow::Empty => include_bytes!("sprites/5"),
-            Flow::Line => match fill.dirs {
-                FlowDir::Left => include_bytes!("sprites/6"),
-                FlowDir::Right => include_bytes!("sprites/7"),
-                FlowDir::Up => include_bytes!("sprites/8"),
-                FlowDir::Down => include_bytes!("sprites/9"),
-                FlowDir::RightUp => include_bytes!("sprites/10"),
-                FlowDir::RightDown => include_bytes!("sprites/11"),
-                FlowDir::LeftDown => include_bytes!("sprites/12"),
-                FlowDir::LeftUp => include_bytes!("sprites/13"),
-                FlowDir::UpDown => include_bytes!("sprites/14"),
-                FlowDir::LeftRight => include_bytes!("sprites/15"),
-                invalid => panic!("Invalid flow {:?}", invalid),
-            },
-        };
-        let start_x = x * (FLOW_SIZE + BORDER_SIZE);
-        let start_y = y * (FLOW_SIZE + BORDER_SIZE);
+    fn render_flow(&mut self, fill: Fill, board_x: usize, board_y: usize) {
+        if !self.rendered_flow_cache.contains_key(&fill) {
+            let mut prerendered = [0u32; FLOW_SIZE * FLOW_SIZE];
+            let sprite: &[u8; SPRITE_SIZE * SPRITE_SIZE] = match fill.flow {
+                Flow::Dot => match fill.dirs {
+                    FlowDir::Detached => include_bytes!("sprites/0"),
+                    FlowDir::Left => include_bytes!("sprites/1"),
+                    FlowDir::Right => include_bytes!("sprites/2"),
+                    FlowDir::Up => include_bytes!("sprites/3"),
+                    FlowDir::Down => include_bytes!("sprites/4"),
+                    invalid => panic!("Invalid flow {:?}", invalid),
+                },
+                Flow::Empty => include_bytes!("sprites/5"),
+                Flow::Line => match fill.dirs {
+                    FlowDir::Left => include_bytes!("sprites/6"),
+                    FlowDir::Right => include_bytes!("sprites/7"),
+                    FlowDir::Up => include_bytes!("sprites/8"),
+                    FlowDir::Down => include_bytes!("sprites/9"),
+                    FlowDir::RightUp => include_bytes!("sprites/10"),
+                    FlowDir::RightDown => include_bytes!("sprites/11"),
+                    FlowDir::LeftDown => include_bytes!("sprites/12"),
+                    FlowDir::LeftUp => include_bytes!("sprites/13"),
+                    FlowDir::UpDown => include_bytes!("sprites/14"),
+                    FlowDir::LeftRight => include_bytes!("sprites/15"),
+                    invalid => panic!("Invalid flow {:?}", invalid),
+                },
+            };
+            for y in 0..FLOW_SIZE {
+                for x in 0..FLOW_SIZE {
+                    let scale =
+                        sprite[y / SPRITE_SCALE * SPRITE_SIZE + x / SPRITE_SCALE] as f32 / 255.0;
+
+                    let pix_r = ((((fill.color >> 8) & 0xf) as f32 * scale) as u32) << 4;
+                    let pix_g = ((((fill.color >> 4) & 0xf) as f32 * scale) as u32) << 4;
+                    let pix_b = (((fill.color & 0xf) as f32 * scale) as u32) << 4;
+
+                    let color = pix_r << 24 | pix_g << 16 | pix_b << 8 | 0xff;
+                    prerendered[y * FLOW_SIZE + x] = color;
+                }
+            }
+            self.rendered_flow_cache.insert(fill, prerendered);
+        }
+        let cached_render = self.rendered_flow_cache[&fill];
+        // let cached_render = [0xff0000ff; FLOW_SIZE * FLOW_SIZE];
+        let start_x = board_x * (FLOW_SIZE + BORDER_SIZE);
+        let start_y = board_y * (FLOW_SIZE + BORDER_SIZE);
         for y in 0..FLOW_SIZE {
             for x in 0..FLOW_SIZE {
-                let scale =
-                    sprite[y / SPRITE_SCALE * SPRITE_SIZE + x / SPRITE_SCALE] as f32 / 255.0;
-
-                let pix_r = ((((fill.color >> 8) & 0xf) as f32 * scale) as u32) << 4;
-                let pix_g = ((((fill.color >> 4) & 0xf) as f32 * scale) as u32) << 4;
-                let pix_b = (((fill.color & 0xf) as f32 * scale) as u32) << 4;
-
-                let color = pix_r << 24 | pix_g << 16 | pix_b << 8 | 0xff;
+                let color = cached_render[y * FLOW_SIZE + x];
                 let pos = (start_y + y) * (self.canvas_width()) + start_x + x;
                 Self::set_pix(&mut self.pix_buf, pos, color);
             }

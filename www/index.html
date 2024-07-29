@@ -191,10 +191,13 @@
             });
 
             newbtn.addEventListener("click", function () {
+                // console.log("new board requested");
                 canvas.resize(grid_size, grid_size);
+                // console.log("resize completed");
                 canvas = use_filled
                     ? Canvas.gen_filled_board(grid_size, grid_size)
                     : Canvas.gen_new_board(grid_size, grid_size);
+                // console.log("done creating board...");
                 buffer = new Uint8ClampedArray(
                     memory.buffer,
                     canvas.get_pix_buf(),
@@ -210,7 +213,24 @@
 
             const renderLoop = () => {
                 canvas.render();
+                if (image.data.length == 0) {
+                    // data sometimes gets invalidated when backing vector gets reallocated
+                    // if this happens, just make a new buffer
+
+                    buffer = new Uint8ClampedArray(
+                        memory.buffer,
+                        canvas.get_pix_buf(),
+                        canvas.canvas_width() * canvas.canvas_height() * 4,
+                    );
+                    image = new ImageData(
+                        buffer,
+                        canvas.canvas_width(),
+                        canvas.canvas_height(),
+                    );
+                }
+
                 ctx.putImageData(image, 0, 0);
+
                 if (canvas.game_won()) {
                     document.getElementById("win").textContent = "You won!";
                 } else {
