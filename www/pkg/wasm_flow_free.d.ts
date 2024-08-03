@@ -94,9 +94,9 @@ export class Canvas {
 */
   write_board(): Uint8Array;
 /**
-* @param {Uint32Array} serialized
+* @param {Uint8Array} serialized
 */
-  read_board(serialized: Uint32Array): void;
+  read_board(serialized: Uint8Array): void;
 /**
 * @param {number} width
 * @param {number} height
@@ -113,6 +113,14 @@ export class Canvas {
 * @returns {Uint8Array}
 */
   to_bytes(): Uint8Array;
+/**
+* @returns {Uint8Array}
+*/
+  to_png(): Uint8Array;
+/**
+* @param {Uint8Array} png
+*/
+  from_png(png: Uint8Array): void;
 /**
 * @param {Uint8Array} board
 */
@@ -166,6 +174,8 @@ export interface InitOutput {
   readonly canvas_gen_filled_board: (a: number, b: number) => number;
   readonly canvas_gen_new_board: (a: number, b: number) => number;
   readonly canvas_to_bytes: (a: number, b: number) => void;
+  readonly canvas_to_png: (a: number, b: number) => void;
+  readonly canvas_from_png: (a: number, b: number, c: number) => void;
   readonly canvas_from_bytes: (a: number, b: number, c: number) => void;
   readonly canvas_resize: (a: number, b: number, c: number) => void;
   readonly canvas_add_dot_at: (a: number, b: number, c: number, d: number) => void;

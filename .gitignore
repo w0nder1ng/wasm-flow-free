@@ -7,3 +7,5 @@ wasm-pack.log
 .zed/
 default.profraw
 .ruff.toml
+board_link.txt
+img_from_serialized.py

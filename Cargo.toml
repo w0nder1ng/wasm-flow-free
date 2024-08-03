@@ -28,6 +28,7 @@ web-sys = { version = "0.3.5", features = [
     'Window',
 ] }
 bitvec = "1.0"
+png = "0.17.13"
 [dev-dependencies]
 wasm-bindgen-test = "0.3.34"
 

@@ -2,13 +2,14 @@ mod utils;
 use bitvec::prelude::*;
 use rand::{
     distributions::{Distribution, WeightedIndex},
-    seq::{IteratorRandom, SliceRandom},
+    seq::SliceRandom,
     thread_rng,
 };
 use std::{
     collections::{HashMap, HashSet},
     convert::{TryFrom, TryInto},
     f32::consts::E,
+    io::Cursor,
 };
 use wasm_bindgen::prelude::*;
 const SPRITE_SIZE: usize = 40;
@@ -462,7 +463,7 @@ impl Board {
         }
         paths.append(&mut created_paths);
         // log("entered path fixer");
-        'outer: for num_iters in 0.. {
+        'outer: for _num_iters in 0.. {
             for path in &mut *paths {
                 let mut val = path.iter().enumerate().filter(|(_, pos)| {
                     FlowDir::NBR_DIRS.iter().any(|dir| {
@@ -473,10 +474,6 @@ impl Board {
                     })
                 });
                 if val.next().is_some() {
-                    if num_iters > 10_000 {
-                        log("failure");
-                        break 'outer;
-                    }
                     let start = *path
                         .iter()
                         .find(|pos| dirs_grid[**pos].num_connections() == 1)
@@ -524,11 +521,6 @@ impl Board {
                     path.clear();
                     path.append(&mut queue);
                     created_paths.push(new_vec);
-                    log(&format!(
-                        "broke an intersect at {}x{}",
-                        break_start % width,
-                        break_start / width
-                    ));
                     continue 'outer;
                 }
             }
@@ -576,7 +568,7 @@ impl Board {
         // no loops
         // no paths that are next to themselves
         // no flows that aren't connected to a dot
-        todo!()
+        true
     }
     pub fn get_fill(&self, x: usize, y: usize) -> Fill {
         self.fills[y * self.width + x]
@@ -811,49 +803,69 @@ impl Board {
     u32 height
 
     [u32; width*height] fill:
-        bits 0-3: dirs (left, right, up, down)
-        bits 4-5: flow type (Dot = 2, Line = 1, Empty = 0)
-        bits 6-17: color (4 bits per color)
-        bits 17-31: reserved for future use
-
+        bits 0-3: dirs/type (left, right, up, down)
+        if the dirs have 3 or 4 high bits, the value is a dot w/ negated directions
+        bits 4-15: color (4 bits per color)
     */
     fn write_board(&self) -> Vec<u8> {
         let mut serialized: Vec<u8> = Vec::new();
         serialized.extend(self.width.to_be_bytes().iter());
         serialized.extend(self.height.to_be_bytes().iter());
         for fill in &self.fills {
-            let mut fill_data: u32 = 0;
-            fill_data |= (fill.dirs as u8) as u32;
-            fill_data |= match fill.flow {
-                Flow::Empty => 0 << 4,
-                Flow::Line => 1 << 4,
-                Flow::Dot => 2 << 4,
+            let mut fill_data: u16 = 0;
+            let mut dirs_info = fill.dirs as u8;
+            match dirs_info.count_ones() {
+                0..2 => match fill.flow {
+                    Flow::Dot => dirs_info = !dirs_info & 0xf,
+                    _ => (),
+                },
+                _ => (),
             };
-            fill_data |= (fill.color as u32 & 0xfff) << 6;
+            fill_data |= dirs_info as u16;
+            fill_data |= (fill.color as u16 & 0xfff) << 4;
             serialized.extend(fill_data.to_be_bytes().iter());
         }
+        log(&format!("serialized {}", serialized.len()));
         serialized
     }
 
-    fn read_board(serialized: &[u32]) -> Self {
-        let width = serialized[0].try_into().expect("Board too wide");
-        let height = serialized[1].try_into().expect("Board too high");
+    fn read_board(serialized: &[u8]) -> Option<Self> {
+        let width: usize = {
+            let w: &[u8; 4] = serialized[0..4].try_into().ok()?;
+            usize::from_be_bytes(*w)
+        };
+        let height: usize = {
+            let h: &[u8; 4] = serialized[4..8].try_into().ok()?;
+            usize::from_be_bytes(*h) as usize
+        };
         let mut board = Board::new(width, height);
-        if width * height != serialized.len() - 2 {
-            panic!("Invalid board size");
+        if width * height != (serialized.len() - 8) / 2 {
+            return None;
         }
-        for (i, dir) in serialized.iter().enumerate().skip(2) {
-            let dirs = FlowDir::try_from(*dir & 0xf).unwrap();
-            let flow = match (*dir >> 4) & 0b11 {
+        for i in (8..serialized.len()).step_by(2) {
+            let packed = u16::from_be_bytes(serialized[i..i + 2].try_into().ok()?);
+            let mut dirs = packed & 0xf;
+            let flow = match dirs.count_ones() {
                 0 => Flow::Empty,
-                1 => Flow::Line,
-                2 => Flow::Dot,
-                _ => panic!("Invalid flow type"),
+                1..=2 => Flow::Line,
+                3..=4 => {
+                    dirs = !dirs & 0xf;
+                    Flow::Dot
+                }
+                _ => {
+                    return None;
+                }
             };
-            let color = (serialized[i] >> 6) & 0xfff;
-            board.fills[i - 2] = Fill::new(color as u16, flow, dirs);
+            let color = packed >> 4;
+            board.fills[(i - 8) / 2] =
+                Fill::new(color as u16, flow, FlowDir::try_from(dirs as u32).ok()?);
         }
-        board
+
+        if !Self::verify_valid(&board) {
+            None
+        } else {
+            Some(board)
+        }
     }
 }
 
@@ -1180,9 +1192,9 @@ impl Canvas {
         self.board.write_board()
     }
 
-    pub fn read_board(&mut self, serialized: &[u32]) {
+    pub fn read_board(&mut self, serialized: &[u8]) {
         let board = Board::read_board(serialized);
-        self.board = board;
+        self.board = board.unwrap_or_else(|| Board::new(9, 9));
     }
 
     pub fn gen_filled_board(width: usize, height: usize) -> Self {
@@ -1218,26 +1230,69 @@ impl Canvas {
         self.write_board()
     }
 
-    pub fn from_bytes(&mut self, board: &[u8]) {
-        if (board.len()) % 4 != 0 {
-            return;
-        }
-        if u32::from_be_bytes(board[0..4].try_into().unwrap()) != self.board.width as u32
-            || u32::from_be_bytes(board[4..8].try_into().unwrap()) != self.board.height as u32
+    pub fn to_png(&self) -> Vec<u8> {
+        let mut to_ret = Vec::new();
+        let ref mut buf = Cursor::new(&mut to_ret);
+        let mut encoder =
+            png::Encoder::new(buf, (self.board.width * 2) as u32, self.board.height as u32);
+        encoder.set_color(png::ColorType::Indexed);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(png::Compression::Best);
+        let palette = get_color_palette(256);
+        let plte: Vec<u8> = palette
+            .iter()
+            .copied()
+            .map(|i| Canvas::unpack_color(i))
+            .flat_map(|i| (1..4).map(move |pos| ((i >> (pos * 8)) & 0xff) as u8))
+            .collect();
+        encoder.set_palette(plte);
         {
-            return;
+            let mut pix_writer = encoder.write_header().unwrap();
+            pix_writer
+                .write_image_data(&self.write_board()[8..])
+                .unwrap();
+        }
+        to_ret
+    }
+    pub fn from_png(&mut self, png: &[u8]) -> Vec<usize> {
+        let mut decoder = png::Decoder::new(Cursor::new(png));
+        let info = decoder.read_header_info().unwrap();
+        let w = info.width;
+        let h = info.height;
+        // log(&format!("{w}x{h}"));
+        let mut data_reader = decoder.read_info().unwrap();
+        self.resize((w / 2) as usize, h as usize);
+        let mut pix = vec![0; (w * h + 8) as usize];
+        pix[0..4].copy_from_slice(&(w / 2).to_be_bytes());
+        pix[4..8].copy_from_slice(&h.to_be_bytes());
+        data_reader.next_frame(&mut pix[8..]).unwrap();
+        self.from_bytes(&pix);
+        vec![self.board.width, self.board.height]
+        // log(&format!("{}", pix.iter().map(|&v| v as u32).sum::<u32>()));
+    }
+    pub fn from_bytes(&mut self, board: &[u8]) {
+        if (board.len()) % 2 != 0 {
+            panic!("invalid length");
+            // return;
+        }
+        let stated_w = u32::from_be_bytes(board[0..4].try_into().unwrap());
+        let stated_h = u32::from_be_bytes(board[4..8].try_into().unwrap());
+
+        if stated_w != self.board.width as u32 || stated_h != self.board.height as u32 {
+            panic!(
+                "board size should be {}x{}, was {}x{}",
+                self.board.width, self.board.height, stated_w, stated_h
+            );
+            // return;
         }
 
-        self.read_board(
-            (0..board.len())
-                .step_by(4)
-                .map(|i| u32::from_be_bytes(board[i..(i + 4)].try_into().unwrap()))
-                .collect::<Vec<u32>>()
-                .as_slice(),
-        );
+        self.read_board(board);
     }
 
     pub fn resize(&mut self, width: usize, height: usize) {
+        if self.board.width == width && self.board.height == height {
+            return;
+        }
         let new_canvas = Canvas::new(width, height);
         self.board = new_canvas.board;
         self.pix_buf = new_canvas.pix_buf;

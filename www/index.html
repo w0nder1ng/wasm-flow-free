@@ -27,9 +27,12 @@
         <br />
         <div>
             <button id="copy-btn">Copy puzzle URL to clipboard</button>
+            <button id="save-btn">Export puzzle to PNG</button>
+            <br />
+            <button id="load-btn">Load puzzle from PNG</button>
+            <br />
             <label for="grid-size">Enter size of grid:</label>
             <input type="number" id="grid-size" />
-            <br />
             <button id="new-btn">New puzzle</button>
         </div>
         <noscript
@@ -49,17 +52,26 @@
                 const binString = atob(base64);
                 return Uint8Array.from(binString, (m) => m.codePointAt(0));
             }
-
+            function saveByteArray(reportName, byte) {
+                var blob = new Blob([byte], { type: "image/png" });
+                var link = document.createElement("a");
+                link.href = window.URL.createObjectURL(blob);
+                var fileName = reportName;
+                link.download = fileName;
+                link.click();
+            }
             const draw = document.getElementById("draw");
             const ctx = draw.getContext("2d");
 
             const copybtn = document.getElementById("copy-btn");
+            const savebtn = document.getElementById("save-btn");
+            const loadbtn = document.getElementById("load-btn");
             const gridsize = document.getElementById("grid-size");
             const newbtn = document.getElementById("new-btn");
             let wasm = await init();
             let memory = wasm.memory;
             let grid_size = 5;
-            const use_filled = false;
+            const use_filled = true;
             let canvas = use_filled
                 ? Canvas.gen_filled_board(grid_size, grid_size)
                 : Canvas.gen_new_board(grid_size, grid_size);
@@ -167,6 +179,44 @@
                         "?" +
                         params.toString(),
                 );
+            });
+            savebtn.addEventListener("click", function () {
+                let board = canvas.to_png();
+                saveByteArray(`flow_free_${grid_size}x${grid_size}`, board);
+            });
+            loadbtn.addEventListener("click", function () {
+                let input = document.createElement("input");
+                input.type = "file";
+
+                input.onchange = (e) => {
+                    let file = e.target.files[0];
+                    file.arrayBuffer().then((res) => {
+                        let buf = new Uint8ClampedArray(res);
+                        canvas.from_png(buf);
+                        draw.width = canvas.canvas_width();
+                        draw.height = canvas.canvas_height();
+
+                        buffer = new Uint8ClampedArray(
+                            memory.buffer,
+                            canvas.get_pix_buf(),
+                            canvas.canvas_width() * canvas.canvas_height() * 4,
+                        );
+                        image = new ImageData(
+                            buffer,
+                            canvas.canvas_width(),
+                            canvas.canvas_height(),
+                        );
+                        grid_size = canvas.width();
+                        if (gridsize.value == "") {
+                            gridsize.setAttribute("placeholder", grid_size);
+                        } else {
+                            gridsize.value = grid_size;
+                        }
+                        canvas.render();
+                    });
+                };
+
+                input.click();
             });
 
             gridsize.addEventListener("change", function () {
