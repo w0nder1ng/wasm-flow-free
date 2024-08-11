@@ -1,9 +1,11 @@
-## Compiling
+## Running locally
 
-This project uses [wasm-pack](https://rustwasm.github.io/docs/wasm-pack/) to compile to webassembly
+This project uses [wasm-pack](https://rustwasm.github.io/docs/wasm-pack/) to compile to webassembly.
 
-`wasm-pack build --target web --out-dir www/pkg` to build
-
+Use `wasm-pack build --target web --out-dir www/pkg`
+in the base directory to build,
+and `python3 -m http.server` in `www/` to deploy.
+The site will be available at `localhost:8000`.
 
 ## TODO
 
@@ -11,6 +13,8 @@ This project uses [wasm-pack](https://rustwasm.github.io/docs/wasm-pack/) to com
 - better editor
 - pre-generated levels list
 - better win screen/general UI
+  - layered canvases (effects -> UI -> grid?)
+  - translucent "glow" around filled-in pipes?
 - looser tracking for mouse position
-- effective serialization for very large boards
 - validity checking for board imports
+- PRNG with seed for puzzle generation?

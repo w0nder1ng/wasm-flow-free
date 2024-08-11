@@ -27,9 +27,9 @@
         <br />
         <div>
             <button id="copy-btn">Copy puzzle URL to clipboard</button>
-            <button id="save-btn">Export puzzle to PNG</button>
+            <button id="save-btn">Export puzzle</button>
             <br />
-            <button id="load-btn">Load puzzle from PNG</button>
+            <button id="load-btn">Load puzzle</button>
             <br />
             <label for="grid-size">Enter size of grid:</label>
             <input type="number" id="grid-size" />
@@ -73,7 +73,7 @@
             let wasm = await init();
             let memory = wasm.memory;
             let grid_size = 5;
-            const use_filled = true;
+            const use_filled = false;
             let canvas = use_filled
                 ? Canvas.gen_filled_board(grid_size, grid_size)
                 : Canvas.gen_new_board(grid_size, grid_size);

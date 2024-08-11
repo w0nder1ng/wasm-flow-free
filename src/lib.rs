@@ -2,7 +2,7 @@ mod utils;
 use bitvec::prelude::*;
 use rand::{
     distributions::{Distribution, WeightedIndex},
-    seq::SliceRandom,
+    seq::{IteratorRandom, SliceRandom},
     thread_rng, Rng,
 };
 use std::{
@@ -24,21 +24,21 @@ extern "C" {
     fn log(s: &str);
 }
 
-// fn reservoir_sample(to_sample: &mut impl Iterator<Item = usize>, weights: &[f32]) -> Option<usize> {
-//     assert!(weights.iter().all(|&f| f > 0.0));
-//     let mut rng = thread_rng();
-//     let mut current_item = to_sample.next()?;
-//     let mut total = weights[current_item];
-//     for item in to_sample {
-//         let w = weights[item];
-//         total += w;
-//         let val = rng.gen_range(0.0..=total);
-//         if val < w {
-//             current_item = item;
-//         }
-//     }
-//     Some(current_item)
-// }
+fn reservoir_sample(mut to_sample: impl Iterator<Item = usize>, weights: &[f32]) -> Option<usize> {
+    assert!(weights.iter().all(|&f| f > 0.0));
+    let mut rng = thread_rng();
+    let mut current_item = to_sample.next()?;
+    let mut total = weights[current_item];
+    for item in to_sample {
+        let w = weights[item];
+        total += w;
+        let val = rng.gen_range(0.0..=total);
+        if val < w {
+            current_item = item;
+        }
+    }
+    Some(current_item)
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -59,16 +59,11 @@ pub enum FlowDir {
 
 impl FlowDir {
     pub const NBR_DIRS: [FlowDir; 4] = [FlowDir::Left, FlowDir::Right, FlowDir::Up, FlowDir::Down];
+    #[rustfmt::skip]
     pub const ALL_DIRS: [FlowDir; 11] = [
-        FlowDir::Left,
-        FlowDir::Right,
-        FlowDir::Up,
-        FlowDir::Down,
+        FlowDir::Left, FlowDir::Right, FlowDir::Up, FlowDir::Down,
         FlowDir::LeftRight,
-        FlowDir::LeftUp,
-        FlowDir::LeftDown,
-        FlowDir::RightUp,
-        FlowDir::RightDown,
+        FlowDir::LeftUp, FlowDir::LeftDown, FlowDir::RightUp, FlowDir::RightDown,
         FlowDir::UpDown,
         FlowDir::Detached,
     ];
@@ -149,15 +144,15 @@ impl FlowDir {
             _ => panic!("tried to get neighbor for non-cardinal direction"),
         }
     }
-    fn change_dir(pos_a: usize, pos_b: usize, width: usize, height: usize) -> Option<Self> {
-        for dir in Self::NBR_DIRS {
-            if let Some(nbr) = dir.nbr_of(pos_a, width, height) {
-                if nbr == pos_b {
-                    return Some(dir);
-                }
-            }
+    fn change_dir(pos_a: usize, pos_b: usize, width: usize) -> Option<Self> {
+        let delta = pos_b.abs_diff(pos_a);
+        match delta {
+            1 if pos_a > pos_b => Some(FlowDir::Left),
+            1 if pos_a < pos_b => Some(FlowDir::Right),
+            _ if delta == width && pos_a > pos_b => Some(FlowDir::Up),
+            _ if delta == width && pos_a < pos_b => Some(FlowDir::Down),
+            _ => None,
         }
-        None
     }
     const fn mask(self) -> u32 {
         #[rustfmt::skip]
@@ -243,9 +238,9 @@ impl TryFrom<u32> for FlowDir {
         }
     }
 }
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
 #[repr(u8)]
-
 pub enum Flow {
     Dot = 2,
     Line = 1,
@@ -258,7 +253,6 @@ pub struct Fill {
     color: u16,
     flow: Flow,
     dirs: FlowDir,
-    // left, right, up, down
 }
 
 impl Fill {
@@ -266,11 +260,7 @@ impl Fill {
         Self { color, flow, dirs }
     }
 }
-// impl Default for Fill {
-//     fn default() -> Self {
-//         Fill::new(0x000, Default::default(), Default::default())
-//     }
-// }
+
 #[derive(Clone, Debug)]
 pub struct Board {
     pub width: usize,
@@ -283,14 +273,10 @@ impl Default for Board {
         Self::new(9, 9)
     }
 }
-#[wasm_bindgen]
-extern "C" {
-    fn alert(s: &str);
-}
 
 impl Board {
     const DOT_WEIGHT: f32 = 0.1;
-    const TURN_WEIGHT: f32 = 0.7;
+    const TURN_WEIGHT: f32 = 0.75;
     const LINE_WEIGHT: f32 = 1.0;
     #[rustfmt::skip]
     pub const WEIGHTS: [f32; 10] = [
@@ -318,12 +304,13 @@ impl Board {
         let grid_w = width + 2;
         let grid_h = height + 2;
         let mut to_fill: Vec<Option<FlowDir>> = Vec::new();
-        for num_iters in 0.. {
+        'attempts: for num_iters in 0.. {
             if num_iters > 1_000 {
                 panic!("failed to generate");
             }
             to_fill = vec![None; grid_w * grid_h];
-            let mut all_candidates: Vec<u32> = vec![0b1111111111; grid_w * grid_h];
+            let mut all_candidates: Vec<u32> = vec![(1 << 10) - 1; grid_w * grid_h];
+            assert!(all_candidates.iter().all(|val| val.count_ones() == 10));
             let mut num_open: i32 = all_candidates.len() as i32;
             for i in 0..to_fill.len() {
                 // set all edges to FlowDir::Unconnected
@@ -343,50 +330,28 @@ impl Board {
             }
 
             // let mut ct = 0;
-            // idx placed, possible w/o choice, old neighbor possible
-            let mut rollbacks: Vec<(usize, u32, [Option<u32>; 4])> = Vec::new();
             while num_open > 0 {
-                let shannon_entropy = |possibility: u32| {
-                    if possibility == 0 {
-                        // we want this to be reported ASAP, so give it a low entropy
-                        return f32::NEG_INFINITY;
-                    }
-                    let total = (0..10)
-                        .filter(|&i| possibility & (1 << i) != 0)
-                        .map(|i| Self::WEIGHTS[i])
-                        .sum::<f32>();
-                    let total_log = (0..10)
-                        .filter(|&i| possibility & (1 << i) != 0)
-                        .map(|i| Self::WEIGHTS[i] * Self::WEIGHTS[i].log2())
-                        .sum::<f32>();
-                    total.log2() - total_log / total
-                };
-                let candidate = all_candidates
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| to_fill[*i].is_none())
-                    .min_by(|(_, a), (_, b)| {
-                        let entropy_a = shannon_entropy(**a);
-                        let entropy_b = shannon_entropy(**b);
-                        let val = entropy_a.partial_cmp(&entropy_b);
-                        match val {
-                            Some(val) => val,
-                            None => {
-                                log(&format!("{} {}", a, entropy_a));
-                                log(&format!("{} {}", b, entropy_b));
-                                panic!("shannon entropy returned NaN")
+                let mut min_entropy = 11; // # of possibilities + 1
+                let mut choices = Vec::new();
+                for (i, item) in all_candidates.iter().enumerate() {
+                    if to_fill[i].is_none() {
+                        match item.count_ones() {
+                            val if val < min_entropy => {
+                                min_entropy = val;
+                                choices.clear();
+                                choices.push(i);
                             }
+                            val if val == min_entropy => {
+                                choices.push(i);
+                            }
+                            _ => (),
                         }
-                    })
-                    .map(|(index, _)| index)
-                    .unwrap();
+                    }
+                }
+                let candidate = *choices.choose(&mut rng).unwrap();
                 // 0: left, 1: right, 2: up, 3: down, 4: left-right, 5: left-up,
                 // 6: left-down, 7: right-up, 8: right-down, 9: up-down
                 let possible: u32 = all_candidates[candidate];
-                #[rustfmt::skip]
-                let nbrs = [candidate - 1, candidate + 1, candidate - grid_w, candidate + grid_w];
-                let dirs = FlowDir::NBR_DIRS;
-
                 if possible != 0 {
                     let choices_indices: Vec<usize> =
                         (0..10).filter(|i| possible & (1 << i) != 0).collect();
@@ -394,52 +359,51 @@ impl Board {
                         choices_indices.iter().map(|&i| Self::WEIGHTS[i]).collect();
                     let dist = WeightedIndex::new(weights).unwrap();
                     let choice = choices_indices[dist.sample(&mut rng)];
-                    rollbacks.push((
-                        candidate,
-                        possible & !(1 << choice),
-                        nbrs.iter()
-                            .map(|&i| {
-                                if to_fill[i].is_none() {
-                                    Some(all_candidates[i])
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect::<Vec<Option<u32>>>()
-                            .try_into()
-                            .unwrap(),
-                    ));
+                    // let choice = reservoir_sample(
+                    //     (0..10).filter(|i| possible & (1 << i) != 0),
+                    //     &Self::WEIGHTS,
+                    // )
+                    // .unwrap();
                     to_fill[candidate] = Some(FlowDir::ALL_DIRS[choice]);
+                    all_candidates[candidate] = 1 << choice;
                     num_open -= 1;
-                    // TODO: percolate better
-                    for (&possible_neighbor, &change_dir) in nbrs.iter().zip(dirs.iter()) {
-                        let dir = to_fill[candidate].unwrap();
-                        all_candidates[possible_neighbor] &= dir.allowed_adjacent(change_dir);
-                    }
-                } else {
-                    let (pos, possible_without_choice, old_nbrs) = rollbacks.pop().unwrap();
-                    if possible_without_choice == 0 {
-                        break;
-                    }
-                    let old_nbr_idx = [pos - 1, pos + 1, pos - grid_w, pos + grid_w];
-                    all_candidates[pos] = possible_without_choice;
-                    to_fill[pos] = None;
-                    for (i, &idx) in old_nbr_idx.iter().enumerate() {
-                        if let Some(possible) = old_nbrs[i] {
-                            all_candidates[idx] = possible
+                    let permissible = |could_be: u32, delta: FlowDir| {
+                        let mut capable = 0;
+                        for i in 0..10 {
+                            if could_be & (1 << i) != 0 {
+                                capable |= FlowDir::ALL_DIRS[i].allowed_adjacent(delta);
+                            }
+                        }
+                        capable
+                    };
+                    let mut to_check = vec![candidate];
+
+                    while let Some(item) = to_check.pop() {
+                        for &change_dir in FlowDir::NBR_DIRS.iter().filter(|dir| {
+                            to_fill[dir.nbr_of(item, grid_w, grid_h).unwrap()].is_none()
+                        }) {
+                            let possible_nbr = change_dir.nbr_of(item, grid_w, grid_h).unwrap();
+                            let old_possible = all_candidates[possible_nbr];
+                            let new_possible = permissible(all_candidates[item], change_dir);
+                            if new_possible & old_possible != old_possible {
+                                all_candidates[possible_nbr] &= new_possible;
+                                to_check.push(possible_nbr);
+                            }
                         }
                     }
-                    num_open += 1;
+                } else {
+                    // because there are no options, we've made a contradiction
+                    continue 'attempts;
                 }
             }
             if !to_fill.contains(&None) {
-                // log(&format!("finished in {} iterations", num_iters));
+                // log(&format!("finished in {num_iters} iterations"));
                 break;
             }
         }
         let no_borders: Option<Vec<FlowDir>> = to_fill
             .into_iter()
-            .filter(|dir| Some(FlowDir::Detached) != *dir)
+            .filter(|dir| *dir != Some(FlowDir::Detached))
             .collect();
         no_borders.expect("only breaks from loop if no None values")
     }
@@ -493,8 +457,7 @@ impl Board {
             for pair in [path_start, path_middle] {
                 let break_0_a = path[pair.0];
                 let break_0_b = path[pair.1];
-                let dir_connected_in =
-                    FlowDir::change_dir(break_0_a, break_0_b, width, height).unwrap();
+                let dir_connected_in = FlowDir::change_dir(break_0_a, break_0_b, width).unwrap();
                 dirs_grid[break_0_a] = dirs_grid[break_0_a].remove_connection(dir_connected_in);
                 dirs_grid[break_0_b] =
                     dirs_grid[break_0_b].remove_connection(dir_connected_in.rev());
@@ -516,15 +479,13 @@ impl Board {
                     })
                 });
                 if val.next().is_some() {
-                    log("found a loop");
+                    // log("found a loop");
                     let start = *path
                         .iter()
                         .find(|pos| dirs_grid[**pos].num_connections() == 1)
                         .unwrap();
                     let mut queue = vec![start];
                     let mut visited = bitvec![0; dirs_grid.len()];
-                    // println!("{}: {:?}", start, path);
-                    // println!("{}", FlowDir::grid_str(dirs_grid.clone(), width));
                     loop {
                         let pos = *queue.last().unwrap();
                         visited.set(pos, true);
@@ -554,7 +515,7 @@ impl Board {
                     let break_end = queue[break_pos];
 
                     let dir_connected_in =
-                        FlowDir::change_dir(break_start, break_end, width, height).unwrap();
+                        FlowDir::change_dir(break_start, break_end, width).unwrap();
                     dirs_grid[break_start] =
                         dirs_grid[break_start].remove_connection(dir_connected_in);
                     dirs_grid[break_end] =
@@ -682,9 +643,10 @@ impl Board {
         // precondition: A already is a line/dot
         if let Flow::Empty = fill_a.flow {
             return false;
-        } else if let Flow::Empty = fill_b.flow {
-            // if B is empty, we'll give it the same color as A
-        } else if fill_a.color != fill_b.color {
+        }
+
+        // if B is empty, we'll give it the same color as A
+        if Flow::Empty != fill_b.flow && fill_a.color != fill_b.color {
             return false;
         }
 
@@ -700,15 +662,8 @@ impl Board {
                 return false;
             }
         }
-
-        let delta = pos_b.abs_diff(pos_a);
-        let my_change_direction = match delta {
-            1 if pos_a > pos_b => FlowDir::Left,
-            1 if pos_a < pos_b => FlowDir::Right,
-            _ if delta == self.width && pos_a > pos_b => FlowDir::Up,
-            _ if delta == self.width && pos_a < pos_b => FlowDir::Down,
-            _ => panic!("Invalid delta"),
-        };
+        let my_change_direction =
+            FlowDir::change_dir(pos_a, pos_b, self.width).expect("invalid delta");
         let their_change_direction = my_change_direction.rev();
 
         // actually add connection between A and B
@@ -792,7 +747,6 @@ impl Board {
     */
     pub fn clear_pipe(&mut self, pos: usize) {
         let (visited, _) = self.flood_search(pos);
-        // log(&format!("{:?}", visited));
         for (i, was_visited) in visited.iter().enumerate() {
             if *was_visited {
                 if let Flow::Dot = self.fills[i].flow {
@@ -810,31 +764,28 @@ impl Board {
     }
 
     fn check_all_connected(&self) -> bool {
-        // sizes are too small for this to matter performance-wise,
-        // but if it ends up being an issue, then use a hashmap
-        for start in 0..(self.width * self.height) {
-            let fill_start = self.fills[start];
-            if let Flow::Dot = fill_start.flow {
-                for end in 0..(self.width * self.height) {
-                    let fill_end = self.fills[end];
-                    if let Flow::Dot = fill_end.flow {
-                        if start != end
-                            && fill_start.color == fill_end.color
-                            && !self.is_connected(start, end)
-                        {
-                            return false;
-                        }
-                    }
-                }
+        let mut map = HashMap::new();
+        for i in 0..(self.width * self.height) {
+            if self.fills[i].flow == Flow::Dot {
+                map.entry(self.fills[i].color)
+                    .or_insert_with(Vec::new)
+                    .push(i);
             }
         }
-
+        for endpoints in map.values() {
+            if endpoints.len() != 2 {
+                return false;
+            }
+            if !self.is_connected(endpoints[0], endpoints[1]) {
+                return false;
+            }
+        }
         true
     }
 
     fn fully_filled(&self) -> bool {
         for i in 0..(self.width * self.height) {
-            if let Flow::Empty = self.fills[i].flow {
+            if self.fills[i].flow == Flow::Empty {
                 return false;
             }
         }
@@ -845,9 +796,9 @@ impl Board {
     u32 width
     u32 height
 
-    [u32; width*height] fill:
+    [u16; width*height] fill:
         bits 0-3: dirs/type (left, right, up, down)
-        if the dirs have 3 or 4 high bits, the value is a dot w/ negated directions
+        if the dirs have 3 or 4 high bits, the value is a dot w/ bitwise-not directions
         bits 4-15: color (4 bits per color)
     */
     fn write_board(&self) -> Vec<u8> {
@@ -953,10 +904,6 @@ impl Canvas {
                 }
             }
         }
-        // board.set_fill(0, 0, Fill::new(0xf00, Flow::Dot, [false; 4]));
-        // board.set_fill(7, 7, Fill::new(0xf00, Flow::Dot, [false; 4]));
-        // board.set_fill(1, 0, Fill::new(0x0f0, Flow::Dot, [false; 4]));
-        // board.set_fill(7, 6, Fill::new(0x0f0, Flow::Dot, [false; 4]));
         Self {
             board,
             pix_buf,
@@ -1020,8 +967,7 @@ impl Canvas {
     pub fn render(&mut self) {
         for y in 0..self.board.height {
             for x in 0..self.board.width {
-                let var_name = y * self.board.width;
-                let fill = self.board.fills[var_name + x];
+                let fill = self.board.fills[y * self.board.width + x];
                 self.render_flow(fill, x, y);
             }
         }
@@ -1045,7 +991,7 @@ impl Canvas {
         self.board.width * FLOW_SIZE + (self.board.width - 1) * BORDER_SIZE
     }
 
-    pub fn box_at(&self, x: usize, y: usize) -> Option<Vec<usize>> {
+    fn box_at(&self, x: usize, y: usize) -> Option<Vec<usize>> {
         let x_pos = x % (FLOW_SIZE + BORDER_SIZE);
         let y_pos = y % (FLOW_SIZE + BORDER_SIZE);
         if x_pos >= FLOW_SIZE || y_pos >= FLOW_SIZE {
@@ -1054,7 +1000,7 @@ impl Canvas {
         Some([x / (FLOW_SIZE + BORDER_SIZE), y / (FLOW_SIZE + BORDER_SIZE)].into())
     }
 
-    fn vec_to_tup(&self, pos: Vec<i32>) -> Option<(usize, usize)> {
+    fn try_vec_to_tup(&self, pos: Vec<i32>) -> Option<(usize, usize)> {
         if pos.len() != 2 || pos[0] < 0 || pos[1] < 0 {
             return None;
         }
@@ -1066,7 +1012,7 @@ impl Canvas {
         Some((x, y))
     }
     pub fn handle_md(&mut self, pos: Vec<i32>) {
-        let Some((x, y)) = self.vec_to_tup(pos) else {
+        let Some((x, y)) = self.try_vec_to_tup(pos) else {
             return;
         };
 
@@ -1078,7 +1024,7 @@ impl Canvas {
             }
             Flow::Line => {
                 if self.board.fills[fill_pos].dirs.num_connections() == 1 {
-                    self.current_pos = Some((x, y))
+                    self.current_pos = Some((x, y));
                 };
             }
             Flow::Empty => (),
@@ -1096,7 +1042,7 @@ impl Canvas {
         let Some((current_x, current_y)) = self.current_pos else {
             return;
         };
-        let Some((x, y)) = self.vec_to_tup(pos) else {
+        let Some((x, y)) = self.try_vec_to_tup(pos) else {
             return;
         };
         let total_diff = current_x.abs_diff(x) + current_y.abs_diff(y);
@@ -1160,63 +1106,6 @@ impl Canvas {
             }
         }
     }
-    pub fn box_md(&self, x: usize, y: usize) -> Option<Vec<usize>> {
-        let x_pos = x / (FLOW_SIZE + BORDER_SIZE);
-        let y_pos = y / (FLOW_SIZE + BORDER_SIZE);
-        if x_pos >= FLOW_SIZE || y_pos >= FLOW_SIZE {
-            return None;
-        }
-        let pos = x_pos + y_pos * self.board.width;
-        let relevant_fill = self.board.fills[pos];
-        if let Flow::Line = relevant_fill.flow {
-            if relevant_fill.dirs.num_connections() != 1 {
-                return None;
-            }
-        }
-        Some([x / (FLOW_SIZE + BORDER_SIZE), y / (FLOW_SIZE + BORDER_SIZE)].into())
-    }
-    pub fn clear_pipe(&mut self, pos: Vec<i32>) {
-        let Some((x, y)) = self.vec_to_tup(pos) else {
-            return;
-        };
-        let pos = y * self.board.width + x;
-        self.board.clear_pipe(pos);
-    }
-
-    pub fn add_connection(&mut self, pos: Vec<i32>, delta: i32) -> bool {
-        let Some((x, y)) = self.vec_to_tup(pos) else {
-            return false;
-        };
-        let delta = match delta {
-            0 => FlowDir::Left,
-            1 => FlowDir::Right,
-            2 => FlowDir::Up,
-            3 => FlowDir::Down,
-            _ => return false,
-        };
-        let pos = x + self.board.width * y;
-        let Some(other_pos) = delta.nbr_of(pos, self.board.width, self.board.height) else {
-            return false;
-        };
-        self.board.add_connection(pos, other_pos)
-    }
-    pub fn remove_connection(&mut self, pos: Vec<i32>, delta: i32) -> bool {
-        let Some((x, y)) = self.vec_to_tup(pos) else {
-            return false;
-        };
-        let delta = match delta {
-            0 => FlowDir::Left,
-            1 => FlowDir::Right,
-            2 => FlowDir::Up,
-            3 => FlowDir::Down,
-            _ => return false,
-        };
-        let pos = x + self.board.width * y;
-        let Some(other_pos) = delta.nbr_of(pos, self.board.width, self.board.height) else {
-            return false;
-        };
-        self.board.remove_connection(pos, other_pos)
-    }
 
     pub fn check_all_connected(&self) -> bool {
         self.board.check_all_connected()
@@ -1267,55 +1156,10 @@ impl Canvas {
     pub fn to_bytes(&self) -> Vec<u8> {
         self.write_board()
     }
-    /*
-    pub fn to_png(&self) -> Vec<u8> {
-        let mut to_ret = Vec::new();
-        let ref mut buf = Cursor::new(&mut to_ret);
-        let mut encoder =
-            png::Encoder::new(buf, (self.board.width * 2) as u32, self.board.height as u32);
-        encoder.set_color(png::ColorType::Indexed);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder.set_compression(png::Compression::Best);
-        let palette = get_color_palette(256);
-        let plte: Vec<u8> = palette
-            .iter()
-            .copied()
-            .map(|i| Canvas::unpack_color(i))
-            .flat_map(|i| (1..4).map(move |pos| ((i >> (pos * 8)) & 0xff) as u8))
-            .collect();
-        encoder.set_palette(plte);
-        {
-            let mut pix_writer = encoder.write_header().unwrap();
-            pix_writer
-                .write_image_data(&self.write_board()[8..])
-                .unwrap();
-        }
-        to_ret
-    }
-    pub fn from_png(&mut self, png: &[u8]) -> Vec<usize> {
-        // TODO: more rigorous checks when deserializing
-        let mut decoder = png::Decoder::new(Cursor::new(png));
-        let info = decoder.read_header_info().unwrap();
-        let w = info.width;
-        let h = info.height;
-        // log(&format!("{w}x{h}"));
-        let mut data_reader = decoder.read_info().unwrap();
-        self.resize((w / 2) as usize, h as usize);
-        let mut pix = vec![0; (w * h + 8) as usize];
-        pix[0..4].copy_from_slice(&(w / 2).to_be_bytes());
-        pix[4..8].copy_from_slice(&h.to_be_bytes());
-        data_reader.next_frame(&mut pix[8..]).unwrap();
-        self.from_bytes(&pix);
-        vec![self.board.width, self.board.height]
-        // log(&format!("{}", pix.iter().map(|&v| v as u32).sum::<u32>()));
-    }
-    */
 
     pub fn from_bytes(&mut self, board: &[u8]) {
-        if board.len() % 2 != 0 {
-            panic!("invalid length");
-            // return;
-        }
+        assert_eq!(board.len() % 2, 0, "invalid length");
+
         let stated_w = u32::from_be_bytes(board[0..4].try_into().unwrap());
         let stated_h = u32::from_be_bytes(board[4..8].try_into().unwrap());
 
@@ -1394,7 +1238,7 @@ pub fn get_color_palette(size: usize) -> Vec<u16> {
         res.shuffle(&mut rng);
         res
     } else {
-        let mut colors = Vec::with_capacity(size as usize);
+        let mut colors = Vec::with_capacity(size);
 
         let h_step = 360.0 / ((size + 1) as f32);
         // log(&format!("h_step: {}", h_step));

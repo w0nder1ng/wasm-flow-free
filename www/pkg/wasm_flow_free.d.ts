@@ -39,12 +39,6 @@ export class Canvas {
 */
   canvas_width(): number;
 /**
-* @param {number} x
-* @param {number} y
-* @returns {Uint32Array | undefined}
-*/
-  box_at(x: number, y: number): Uint32Array | undefined;
-/**
 * @param {Int32Array} pos
 */
   handle_md(pos: Int32Array): void;
@@ -59,28 +53,6 @@ export class Canvas {
 * @param {string} keypress
 */
   handle_keypress(keypress: string): void;
-/**
-* @param {number} x
-* @param {number} y
-* @returns {Uint32Array | undefined}
-*/
-  box_md(x: number, y: number): Uint32Array | undefined;
-/**
-* @param {Int32Array} pos
-*/
-  clear_pipe(pos: Int32Array): void;
-/**
-* @param {Int32Array} pos
-* @param {number} delta
-* @returns {boolean}
-*/
-  add_connection(pos: Int32Array, delta: number): boolean;
-/**
-* @param {Int32Array} pos
-* @param {number} delta
-* @returns {boolean}
-*/
-  remove_connection(pos: Int32Array, delta: number): boolean;
 /**
 * @returns {boolean}
 */
@@ -151,15 +123,10 @@ export interface InitOutput {
   readonly canvas_height: (a: number) => number;
   readonly canvas_canvas_height: (a: number) => number;
   readonly canvas_canvas_width: (a: number) => number;
-  readonly canvas_box_at: (a: number, b: number, c: number, d: number) => void;
   readonly canvas_handle_md: (a: number, b: number, c: number) => void;
   readonly canvas_handle_mu: (a: number) => void;
   readonly canvas_handle_mm: (a: number, b: number, c: number) => void;
   readonly canvas_handle_keypress: (a: number, b: number, c: number) => void;
-  readonly canvas_box_md: (a: number, b: number, c: number, d: number) => void;
-  readonly canvas_clear_pipe: (a: number, b: number, c: number) => void;
-  readonly canvas_add_connection: (a: number, b: number, c: number, d: number) => number;
-  readonly canvas_remove_connection: (a: number, b: number, c: number, d: number) => number;
   readonly canvas_check_all_connected: (a: number) => number;
   readonly canvas_game_won: (a: number) => number;
   readonly canvas_read_board: (a: number, b: number, c: number) => void;
@@ -173,10 +140,10 @@ export interface InitOutput {
   readonly canvas_remap_color_palette: (a: number, b: number, c: number) => void;
   readonly get_color_palette: (a: number, b: number) => void;
   readonly canvas_write_board: (a: number, b: number) => void;
-  readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
-  readonly __wbindgen_free: (a: number, b: number, c: number) => void;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+  readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
+  readonly __wbindgen_free: (a: number, b: number, c: number) => void;
   readonly __wbindgen_exn_store: (a: number) => void;
 }
 

@@ -47,15 +47,6 @@ function addHeapObject(obj) {
     return idx;
 }
 
-let cachedInt32Memory0 = null;
-
-function getInt32Memory0() {
-    if (cachedInt32Memory0 === null || cachedInt32Memory0.byteLength === 0) {
-        cachedInt32Memory0 = new Int32Array(wasm.memory.buffer);
-    }
-    return cachedInt32Memory0;
-}
-
 let cachedUint32Memory0 = null;
 
 function getUint32Memory0() {
@@ -63,11 +54,6 @@ function getUint32Memory0() {
         cachedUint32Memory0 = new Uint32Array(wasm.memory.buffer);
     }
     return cachedUint32Memory0;
-}
-
-function getArrayU32FromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    return getUint32Memory0().subarray(ptr / 4, ptr / 4 + len);
 }
 
 let WASM_VECTOR_LEN = 0;
@@ -131,6 +117,15 @@ function passStringToWasm0(arg, malloc, realloc) {
 
     WASM_VECTOR_LEN = offset;
     return ptr;
+}
+
+let cachedInt32Memory0 = null;
+
+function getInt32Memory0() {
+    if (cachedInt32Memory0 === null || cachedInt32Memory0.byteLength === 0) {
+        cachedInt32Memory0 = new Int32Array(wasm.memory.buffer);
+    }
+    return cachedInt32Memory0;
 }
 
 function getArrayU8FromWasm0(ptr, len) {
@@ -271,27 +266,6 @@ export class Canvas {
         return ret >>> 0;
     }
     /**
-    * @param {number} x
-    * @param {number} y
-    * @returns {Uint32Array | undefined}
-    */
-    box_at(x, y) {
-        try {
-            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-            wasm.canvas_box_at(retptr, this.__wbg_ptr, x, y);
-            var r0 = getInt32Memory0()[retptr / 4 + 0];
-            var r1 = getInt32Memory0()[retptr / 4 + 1];
-            let v1;
-            if (r0 !== 0) {
-                v1 = getArrayU32FromWasm0(r0, r1).slice();
-                wasm.__wbindgen_free(r0, r1 * 4, 4);
-            }
-            return v1;
-        } finally {
-            wasm.__wbindgen_add_to_stack_pointer(16);
-        }
-    }
-    /**
     * @param {Int32Array} pos
     */
     handle_md(pos) {
@@ -319,57 +293,6 @@ export class Canvas {
         const ptr0 = passStringToWasm0(keypress, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         wasm.canvas_handle_keypress(this.__wbg_ptr, ptr0, len0);
-    }
-    /**
-    * @param {number} x
-    * @param {number} y
-    * @returns {Uint32Array | undefined}
-    */
-    box_md(x, y) {
-        try {
-            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-            wasm.canvas_box_md(retptr, this.__wbg_ptr, x, y);
-            var r0 = getInt32Memory0()[retptr / 4 + 0];
-            var r1 = getInt32Memory0()[retptr / 4 + 1];
-            let v1;
-            if (r0 !== 0) {
-                v1 = getArrayU32FromWasm0(r0, r1).slice();
-                wasm.__wbindgen_free(r0, r1 * 4, 4);
-            }
-            return v1;
-        } finally {
-            wasm.__wbindgen_add_to_stack_pointer(16);
-        }
-    }
-    /**
-    * @param {Int32Array} pos
-    */
-    clear_pipe(pos) {
-        const ptr0 = passArray32ToWasm0(pos, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        wasm.canvas_clear_pipe(this.__wbg_ptr, ptr0, len0);
-    }
-    /**
-    * @param {Int32Array} pos
-    * @param {number} delta
-    * @returns {boolean}
-    */
-    add_connection(pos, delta) {
-        const ptr0 = passArray32ToWasm0(pos, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.canvas_add_connection(this.__wbg_ptr, ptr0, len0, delta);
-        return ret !== 0;
-    }
-    /**
-    * @param {Int32Array} pos
-    * @param {number} delta
-    * @returns {boolean}
-    */
-    remove_connection(pos, delta) {
-        const ptr0 = passArray32ToWasm0(pos, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.canvas_remove_connection(this.__wbg_ptr, ptr0, len0, delta);
-        return ret !== 0;
     }
     /**
     * @returns {boolean}
@@ -517,9 +440,6 @@ async function __wbg_load(module, imports) {
 function __wbg_get_imports() {
     const imports = {};
     imports.wbg = {};
-    imports.wbg.__wbg_log_c95ac9722b25b2de = function(arg0, arg1) {
-        console.log(getStringFromWasm0(arg0, arg1));
-    };
     imports.wbg.__wbindgen_object_drop_ref = function(arg0) {
         takeObject(arg0);
     };
