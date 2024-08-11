@@ -3,13 +3,11 @@ use bitvec::prelude::*;
 use rand::{
     distributions::{Distribution, WeightedIndex},
     seq::SliceRandom,
-    thread_rng,
+    thread_rng, Rng,
 };
 use std::{
     collections::{HashMap, HashSet},
     convert::{TryFrom, TryInto},
-    f32::consts::E,
-    io::Cursor,
 };
 use wasm_bindgen::prelude::*;
 const SPRITE_SIZE: usize = 40;
@@ -25,6 +23,23 @@ extern "C" {
     #[wasm_bindgen(js_namespace = console)]
     fn log(s: &str);
 }
+
+// fn reservoir_sample(to_sample: &mut impl Iterator<Item = usize>, weights: &[f32]) -> Option<usize> {
+//     assert!(weights.iter().all(|&f| f > 0.0));
+//     let mut rng = thread_rng();
+//     let mut current_item = to_sample.next()?;
+//     let mut total = weights[current_item];
+//     for item in to_sample {
+//         let w = weights[item];
+//         total += w;
+//         let val = rng.gen_range(0.0..=total);
+//         if val < w {
+//             current_item = item;
+//         }
+//     }
+//     Some(current_item)
+// }
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum FlowDir {
@@ -67,7 +82,7 @@ impl FlowDir {
             FlowDir::LeftUp => '⅃',
             FlowDir::LeftDown => '⅂',
             FlowDir::RightUp => 'L',
-            FlowDir::RightDown => 'f',
+            FlowDir::RightDown => 'F',
             FlowDir::UpDown => '|',
             FlowDir::Detached => ' ',
         };
@@ -273,17 +288,17 @@ extern "C" {
     fn alert(s: &str);
 }
 
-fn softmax(ins: Vec<f32>) -> Vec<f32> {
-    let to_the_power: Vec<f32> = ins.iter().copied().map(|val| E.powf(val)).collect();
-    let total: f32 = to_the_power.iter().sum();
-    to_the_power
-        .iter()
-        .copied()
-        .map(|val| val / total)
-        .collect()
-}
-
 impl Board {
+    const DOT_WEIGHT: f32 = 0.1;
+    const TURN_WEIGHT: f32 = 0.7;
+    const LINE_WEIGHT: f32 = 1.0;
+    #[rustfmt::skip]
+    pub const WEIGHTS: [f32; 10] = [
+        Self::DOT_WEIGHT, Self::DOT_WEIGHT,Self::DOT_WEIGHT,Self::DOT_WEIGHT,
+        Self::LINE_WEIGHT,
+        Self::TURN_WEIGHT, Self::TURN_WEIGHT, Self::TURN_WEIGHT,Self::TURN_WEIGHT,
+        Self::LINE_WEIGHT,
+    ];
     pub fn new(width: usize, height: usize) -> Self {
         if width * height < 2 {
             panic!("board too small")
@@ -298,9 +313,8 @@ impl Board {
     pub fn as_dirs_grid(&self) -> Vec<FlowDir> {
         self.fills.iter().map(|val| val.dirs).collect()
     }
-    fn wfc_gen_dirty(width: usize, height: usize) -> Vec<FlowDir> {
+    pub fn wfc_gen_dirty(width: usize, height: usize) -> Vec<FlowDir> {
         let mut rng = thread_rng();
-        const WEIGHTS: [f32; 10] = [-1.0, -1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.5, 1.5];
         let grid_w = width + 2;
         let grid_h = height + 2;
         let mut to_fill: Vec<Option<FlowDir>> = Vec::new();
@@ -332,11 +346,38 @@ impl Board {
             // idx placed, possible w/o choice, old neighbor possible
             let mut rollbacks: Vec<(usize, u32, [Option<u32>; 4])> = Vec::new();
             while num_open > 0 {
+                let shannon_entropy = |possibility: u32| {
+                    if possibility == 0 {
+                        // we want this to be reported ASAP, so give it a low entropy
+                        return f32::NEG_INFINITY;
+                    }
+                    let total = (0..10)
+                        .filter(|&i| possibility & (1 << i) != 0)
+                        .map(|i| Self::WEIGHTS[i])
+                        .sum::<f32>();
+                    let total_log = (0..10)
+                        .filter(|&i| possibility & (1 << i) != 0)
+                        .map(|i| Self::WEIGHTS[i] * Self::WEIGHTS[i].log2())
+                        .sum::<f32>();
+                    total.log2() - total_log / total
+                };
                 let candidate = all_candidates
                     .iter()
                     .enumerate()
                     .filter(|(i, _)| to_fill[*i].is_none())
-                    .min_by(|(_, a), (_, b)| a.count_ones().cmp(&b.count_ones()))
+                    .min_by(|(_, a), (_, b)| {
+                        let entropy_a = shannon_entropy(**a);
+                        let entropy_b = shannon_entropy(**b);
+                        let val = entropy_a.partial_cmp(&entropy_b);
+                        match val {
+                            Some(val) => val,
+                            None => {
+                                log(&format!("{} {}", a, entropy_a));
+                                log(&format!("{} {}", b, entropy_b));
+                                panic!("shannon entropy returned NaN")
+                            }
+                        }
+                    })
                     .map(|(index, _)| index)
                     .unwrap();
                 // 0: left, 1: right, 2: up, 3: down, 4: left-right, 5: left-up,
@@ -347,10 +388,10 @@ impl Board {
                 let dirs = FlowDir::NBR_DIRS;
 
                 if possible != 0 {
-                    // log(&format!("0b{:010b}", possible));
                     let choices_indices: Vec<usize> =
                         (0..10).filter(|i| possible & (1 << i) != 0).collect();
-                    let weights = softmax(choices_indices.iter().map(|&i| WEIGHTS[i]).collect());
+                    let weights: Vec<f32> =
+                        choices_indices.iter().map(|&i| Self::WEIGHTS[i]).collect();
                     let dist = WeightedIndex::new(weights).unwrap();
                     let choice = choices_indices[dist.sample(&mut rng)];
                     rollbacks.push((
@@ -370,6 +411,7 @@ impl Board {
                     ));
                     to_fill[candidate] = Some(FlowDir::ALL_DIRS[choice]);
                     num_open -= 1;
+                    // TODO: percolate better
                     for (&possible_neighbor, &change_dir) in nbrs.iter().zip(dirs.iter()) {
                         let dir = to_fill[candidate].unwrap();
                         all_candidates[possible_neighbor] &= dir.allowed_adjacent(change_dir);
@@ -474,6 +516,7 @@ impl Board {
                     })
                 });
                 if val.next().is_some() {
+                    log("found a loop");
                     let start = *path
                         .iter()
                         .find(|pos| dirs_grid[**pos].num_connections() == 1)
@@ -551,7 +594,7 @@ impl Board {
                 dir,
             )
         }
-        let palette = get_color_palette(paths.len() as i32);
+        let palette = get_color_palette(paths.len());
         for (i, path) in paths.iter().enumerate() {
             for pos in path {
                 board.fills[*pos].color = palette[i];
@@ -809,34 +852,30 @@ impl Board {
     */
     fn write_board(&self) -> Vec<u8> {
         let mut serialized: Vec<u8> = Vec::new();
-        serialized.extend(self.width.to_be_bytes().iter());
-        serialized.extend(self.height.to_be_bytes().iter());
+        serialized.extend((self.width as u32).to_be_bytes().iter());
+        serialized.extend((self.height as u32).to_be_bytes().iter());
         for fill in &self.fills {
             let mut fill_data: u16 = 0;
             let mut dirs_info = fill.dirs as u8;
-            match dirs_info.count_ones() {
-                0..2 => match fill.flow {
-                    Flow::Dot => dirs_info = !dirs_info & 0xf,
-                    _ => (),
-                },
-                _ => (),
-            };
+            if fill.flow == Flow::Dot {
+                dirs_info = !dirs_info & 0xf
+            }
+
             fill_data |= dirs_info as u16;
-            fill_data |= (fill.color as u16 & 0xfff) << 4;
+            fill_data |= (fill.color & 0xfff) << 4;
             serialized.extend(fill_data.to_be_bytes().iter());
         }
-        log(&format!("serialized {}", serialized.len()));
         serialized
     }
 
     fn read_board(serialized: &[u8]) -> Option<Self> {
         let width: usize = {
             let w: &[u8; 4] = serialized[0..4].try_into().ok()?;
-            usize::from_be_bytes(*w)
+            u32::from_be_bytes(*w) as usize
         };
         let height: usize = {
             let h: &[u8; 4] = serialized[4..8].try_into().ok()?;
-            usize::from_be_bytes(*h) as usize
+            u32::from_be_bytes(*h) as usize
         };
         let mut board = Board::new(width, height);
         if width * height != (serialized.len() - 8) / 2 {
@@ -857,8 +896,7 @@ impl Board {
                 }
             };
             let color = packed >> 4;
-            board.fills[(i - 8) / 2] =
-                Fill::new(color as u16, flow, FlowDir::try_from(dirs as u32).ok()?);
+            board.fills[(i - 8) / 2] = Fill::new(color, flow, FlowDir::try_from(dirs as u32).ok()?);
         }
 
         if !Self::verify_valid(&board) {
@@ -926,7 +964,7 @@ impl Canvas {
         }
     }
     fn render_flow(&mut self, fill: Fill, board_x: usize, board_y: usize) {
-        if !self.rendered_flow_cache.contains_key(&fill) {
+        self.rendered_flow_cache.entry(fill).or_insert_with(|| {
             let mut prerendered = [0u32; FLOW_SIZE * FLOW_SIZE];
             let sprite: &[u8; SPRITE_SIZE * SPRITE_SIZE] = match fill.flow {
                 Flow::Dot => match fill.dirs {
@@ -965,8 +1003,8 @@ impl Canvas {
                     prerendered[y * FLOW_SIZE + x] = color;
                 }
             }
-            self.rendered_flow_cache.insert(fill, prerendered);
-        }
+            prerendered
+        });
         let cached_render = self.rendered_flow_cache[&fill];
         // let cached_render = [0xff0000ff; FLOW_SIZE * FLOW_SIZE];
         let start_x = board_x * (FLOW_SIZE + BORDER_SIZE);
@@ -1185,7 +1223,7 @@ impl Canvas {
     }
 
     pub fn game_won(&self) -> bool {
-        self.board.check_all_connected() && self.board.fully_filled()
+        self.board.fully_filled() && self.board.check_all_connected()
     }
 
     pub fn write_board(&self) -> Vec<u8> {
@@ -1229,7 +1267,7 @@ impl Canvas {
     pub fn to_bytes(&self) -> Vec<u8> {
         self.write_board()
     }
-
+    /*
     pub fn to_png(&self) -> Vec<u8> {
         let mut to_ret = Vec::new();
         let ref mut buf = Cursor::new(&mut to_ret);
@@ -1255,6 +1293,7 @@ impl Canvas {
         to_ret
     }
     pub fn from_png(&mut self, png: &[u8]) -> Vec<usize> {
+        // TODO: more rigorous checks when deserializing
         let mut decoder = png::Decoder::new(Cursor::new(png));
         let info = decoder.read_header_info().unwrap();
         let w = info.width;
@@ -1270,8 +1309,10 @@ impl Canvas {
         vec![self.board.width, self.board.height]
         // log(&format!("{}", pix.iter().map(|&v| v as u32).sum::<u32>()));
     }
+    */
+
     pub fn from_bytes(&mut self, board: &[u8]) {
-        if (board.len()) % 2 != 0 {
+        if board.len() % 2 != 0 {
             panic!("invalid length");
             // return;
         }
@@ -1279,11 +1320,7 @@ impl Canvas {
         let stated_h = u32::from_be_bytes(board[4..8].try_into().unwrap());
 
         if stated_w != self.board.width as u32 || stated_h != self.board.height as u32 {
-            panic!(
-                "board size should be {}x{}, was {}x{}",
-                self.board.width, self.board.height, stated_w, stated_h
-            );
-            // return;
+            self.resize(stated_w as usize, stated_h as usize);
         }
 
         self.read_board(board);
@@ -1296,6 +1333,7 @@ impl Canvas {
         let new_canvas = Canvas::new(width, height);
         self.board = new_canvas.board;
         self.pix_buf = new_canvas.pix_buf;
+        self.rendered_flow_cache.clear();
     }
 
     pub fn add_dot_at(&mut self, x: usize, y: usize, color: u16) {
@@ -1324,10 +1362,7 @@ impl Canvas {
             .map(|fill| fill.color)
             .collect::<HashSet<u16>>();
         let num_colors = current_palette.len();
-        let new_palette = match new_palette {
-            Some(palette) => palette,
-            None => get_color_palette(num_colors as i32),
-        };
+        let new_palette = new_palette.unwrap_or_else(|| get_color_palette(num_colors));
         if new_palette.len() < num_colors {
             return;
         }
@@ -1347,16 +1382,15 @@ impl Canvas {
 }
 
 #[wasm_bindgen]
-pub fn get_color_palette(size: i32) -> Vec<u16> {
-    assert!(size > 0);
+pub fn get_color_palette(size: usize) -> Vec<u16> {
     // log(&format!("palette size: {}", size));
     const CLASSIC_COLORS: [u16; 16] = [
         0xf00, 0xff0, 0x13f, 0x0a0, 0xa33, 0xfa0, 0x0ff, 0xf0c, 0x808, 0xfff, 0xaaa, 0x0f0, 0xbb6,
         0x008, 0x088, 0xf19,
     ];
     let mut rng = thread_rng();
-    if size < CLASSIC_COLORS.len() as i32 {
-        let mut res = CLASSIC_COLORS[0..size as usize].to_vec();
+    if size < CLASSIC_COLORS.len() {
+        let mut res = CLASSIC_COLORS[0..size].to_vec();
         res.shuffle(&mut rng);
         res
     } else {
@@ -1376,7 +1410,7 @@ pub fn get_color_palette(size: i32) -> Vec<u16> {
         colors.dedup();
         colors.shuffle(&mut rng);
 
-        if colors.len() < size as usize {
+        if colors.len() < size {
             colors = Vec::with_capacity(11 * 11 * 11);
             for r in 4..16 {
                 for g in 4..16 {
@@ -1388,8 +1422,8 @@ pub fn get_color_palette(size: i32) -> Vec<u16> {
             // log(&format!("silly path: {}", colors.len()));
             colors.shuffle(&mut rng);
         }
-        colors.truncate(size as usize);
-        assert_eq!(size, colors.len() as i32, "could not create enough colors");
+        colors.truncate(size);
+        assert_eq!(size, colors.len(), "could not create enough colors");
         colors
     }
 }

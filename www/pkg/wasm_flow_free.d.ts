@@ -114,14 +114,6 @@ export class Canvas {
 */
   to_bytes(): Uint8Array;
 /**
-* @returns {Uint8Array}
-*/
-  to_png(): Uint8Array;
-/**
-* @param {Uint8Array} png
-*/
-  from_png(png: Uint8Array): void;
-/**
 * @param {Uint8Array} board
 */
   from_bytes(board: Uint8Array): void;
@@ -174,8 +166,6 @@ export interface InitOutput {
   readonly canvas_gen_filled_board: (a: number, b: number) => number;
   readonly canvas_gen_new_board: (a: number, b: number) => number;
   readonly canvas_to_bytes: (a: number, b: number) => void;
-  readonly canvas_to_png: (a: number, b: number) => void;
-  readonly canvas_from_png: (a: number, b: number, c: number) => void;
   readonly canvas_from_bytes: (a: number, b: number, c: number) => void;
   readonly canvas_resize: (a: number, b: number, c: number) => void;
   readonly canvas_add_dot_at: (a: number, b: number, c: number, d: number) => void;

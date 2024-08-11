@@ -53,7 +53,9 @@
                 return Uint8Array.from(binString, (m) => m.codePointAt(0));
             }
             function saveByteArray(reportName, byte) {
-                var blob = new Blob([byte], { type: "image/png" });
+                var blob = new Blob([byte], {
+                    type: "application/octet-stream",
+                });
                 var link = document.createElement("a");
                 link.href = window.URL.createObjectURL(blob);
                 var fileName = reportName;
@@ -109,28 +111,6 @@
             draw.height = canvas.canvas_height();
             canvas.render();
 
-            let currently_focused = null;
-            let is_mouse_down = false;
-            function attemptConnection(delta) {
-                // if adding a connection fails, attempt to remove a connection; update position if either succeeds
-                if (!currently_focused) {
-                    return;
-                }
-                const result =
-                    canvas.add_connection(currently_focused, delta) ||
-                    canvas.remove_connection(currently_focused, delta);
-                if (result) {
-                    if (delta == 0) {
-                        currently_focused[0] -= 1;
-                    } else if (delta == 1) {
-                        currently_focused[0] += 1;
-                    } else if (delta == 2) {
-                        currently_focused[1] -= 1;
-                    } else if (delta == 3) {
-                        currently_focused[1] += 1;
-                    }
-                }
-            }
             function mdHandler(e) {
                 e.preventDefault();
                 let rect = draw.getBoundingClientRect();
@@ -181,8 +161,8 @@
                 );
             });
             savebtn.addEventListener("click", function () {
-                let board = canvas.to_png();
-                saveByteArray(`flow_free_${grid_size}x${grid_size}`, board);
+                let board = canvas.to_bytes();
+                saveByteArray(`${grid_size}x${grid_size}.ffsave`, board);
             });
             loadbtn.addEventListener("click", function () {
                 let input = document.createElement("input");
@@ -192,7 +172,7 @@
                     let file = e.target.files[0];
                     file.arrayBuffer().then((res) => {
                         let buf = new Uint8ClampedArray(res);
-                        canvas.from_png(buf);
+                        canvas.from_bytes(buf);
                         draw.width = canvas.canvas_width();
                         draw.height = canvas.canvas_height();
 
@@ -241,13 +221,10 @@
             });
 
             newbtn.addEventListener("click", function () {
-                // console.log("new board requested");
                 canvas.resize(grid_size, grid_size);
-                // console.log("resize completed");
                 canvas = use_filled
                     ? Canvas.gen_filled_board(grid_size, grid_size)
                     : Canvas.gen_new_board(grid_size, grid_size);
-                // console.log("done creating board...");
                 buffer = new Uint8ClampedArray(
                     memory.buffer,
                     canvas.get_pix_buf(),

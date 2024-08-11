@@ -24,8 +24,6 @@ export function canvas_read_board(a: number, b: number, c: number): void;
 export function canvas_gen_filled_board(a: number, b: number): number;
 export function canvas_gen_new_board(a: number, b: number): number;
 export function canvas_to_bytes(a: number, b: number): void;
-export function canvas_to_png(a: number, b: number): void;
-export function canvas_from_png(a: number, b: number, c: number): void;
 export function canvas_from_bytes(a: number, b: number, c: number): void;
 export function canvas_resize(a: number, b: number, c: number): void;
 export function canvas_add_dot_at(a: number, b: number, c: number, d: number): void;
