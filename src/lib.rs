@@ -2,7 +2,7 @@ mod utils;
 use bitvec::prelude::*;
 use rand::{
     distributions::{Distribution, WeightedIndex},
-    seq::{IteratorRandom, SliceRandom},
+    seq::SliceRandom,
     thread_rng, Rng,
 };
 use std::{
@@ -24,9 +24,12 @@ extern "C" {
     fn log(s: &str);
 }
 
-fn reservoir_sample(mut to_sample: impl Iterator<Item = usize>, weights: &[f32]) -> Option<usize> {
-    assert!(weights.iter().all(|&f| f > 0.0));
-    let mut rng = thread_rng();
+pub fn reservoir_sample(
+    mut to_sample: impl Iterator<Item = usize>,
+    weights: &[f32],
+    rng: &mut impl Rng,
+) -> Option<usize> {
+    debug_assert!(weights.iter().all(|&f| f > 0.0));
     let mut current_item = to_sample.next()?;
     let mut total = weights[current_item];
     for item in to_sample {
@@ -353,17 +356,9 @@ impl Board {
                 // 6: left-down, 7: right-up, 8: right-down, 9: up-down
                 let possible: u32 = all_candidates[candidate];
                 if possible != 0 {
-                    let choices_indices: Vec<usize> =
-                        (0..10).filter(|i| possible & (1 << i) != 0).collect();
-                    let weights: Vec<f32> =
-                        choices_indices.iter().map(|&i| Self::WEIGHTS[i]).collect();
-                    let dist = WeightedIndex::new(weights).unwrap();
-                    let choice = choices_indices[dist.sample(&mut rng)];
-                    // let choice = reservoir_sample(
-                    //     (0..10).filter(|i| possible & (1 << i) != 0),
-                    //     &Self::WEIGHTS,
-                    // )
-                    // .unwrap();
+                    let choices_indices = (0..10).filter(|i| possible & (1 << i) != 0);
+                    let choice =
+                        reservoir_sample(choices_indices, &Self::WEIGHTS, &mut rng).expect("");
                     to_fill[candidate] = Some(FlowDir::ALL_DIRS[choice]);
                     all_candidates[candidate] = 1 << choice;
                     num_open -= 1;
@@ -572,6 +567,7 @@ impl Board {
         // no loops
         // no paths that are next to themselves
         // no flows that aren't connected to a dot
+
         true
     }
     pub fn get_fill(&self, x: usize, y: usize) -> Fill {
@@ -662,8 +658,8 @@ impl Board {
                 return false;
             }
         }
-        let my_change_direction =
-            FlowDir::change_dir(pos_a, pos_b, self.width).expect("invalid delta");
+        let my_change_direction = FlowDir::change_dir(pos_a, pos_b, self.width)
+            .expect("method should only be called with valid delta");
         let their_change_direction = my_change_direction.rev();
 
         // actually add connection between A and B
@@ -706,7 +702,7 @@ impl Board {
             1 if pos_a < pos_b => FlowDir::Right,
             _ if delta == self.width && pos_a > pos_b => FlowDir::Up,
             _ if delta == self.width && pos_a < pos_b => FlowDir::Down,
-            _ => panic!("Invalid delta"),
+            _ => panic!("Invalid delta: {} -> {}", pos_a, pos_b),
         };
         let their_change_direction = my_change_direction.rev();
         if !fill_a.dirs.is_connected(my_change_direction)
@@ -1045,10 +1041,31 @@ impl Canvas {
         let Some((x, y)) = self.try_vec_to_tup(pos) else {
             return;
         };
-        let total_diff = current_x.abs_diff(x) + current_y.abs_diff(y);
-        if total_diff != 1 {
-            return;
-        }
+        let diff_x = current_x.abs_diff(x);
+        let diff_y = current_y.abs_diff(y);
+        let (x, y) = match diff_x + diff_y {
+            0 => return, // no change in position, so we're done
+            1 => (x, y), // if diff is only one, we don't have to actually choose
+            _ => {
+                if diff_x >= diff_y {
+                    (
+                        match x > current_x {
+                            true => current_x + 1,
+                            false => current_x - 1,
+                        },
+                        current_y,
+                    )
+                } else {
+                    (
+                        current_x,
+                        match y > current_y {
+                            true => current_y + 1,
+                            false => current_y - 1,
+                        },
+                    )
+                }
+            }
+        };
         let pos_a = current_x + current_y * self.board.width;
         let pos_b = x + y * self.board.width;
         if self.board.fills[pos_a].flow != Flow::Empty {

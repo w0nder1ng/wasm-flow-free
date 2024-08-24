@@ -9,12 +9,13 @@ The site will be available at `localhost:8000`.
 
 ## TODO
 
-- move logic to js file or template so it's consistent across pages
+- fix mostly broken generator/editor
 - better editor
 - pre-generated levels list
 - better win screen/general UI
   - layered canvases (effects -> UI -> grid?)
   - translucent "glow" around filled-in pipes?
-- looser tracking for mouse position
+- ~looser tracking for mouse position~
+  - get feedback on tracking
 - validity checking for board imports
 - PRNG with seed for puzzle generation?
