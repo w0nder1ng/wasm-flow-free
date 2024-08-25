@@ -8,4 +8,4 @@ wasm-pack.log
 default.profraw
 .ruff.toml
 board_link.txt
-img_from_serialized.py
+pyrightconfig.json
