@@ -15,6 +15,7 @@ export function canvas_handle_mm(a: number, b: number, c: number): void;
 export function canvas_handle_keypress(a: number, b: number, c: number): void;
 export function canvas_check_all_connected(a: number): number;
 export function canvas_game_won(a: number): number;
+export function canvas_write_board(a: number, b: number): void;
 export function canvas_read_board(a: number, b: number, c: number): void;
 export function canvas_gen_filled_board(a: number, b: number): number;
 export function canvas_gen_new_board(a: number, b: number): number;
@@ -25,7 +26,6 @@ export function canvas_add_dot_at(a: number, b: number, c: number, d: number): v
 export function canvas_remove_dot_at(a: number, b: number, c: number): void;
 export function canvas_remap_color_palette(a: number, b: number, c: number): void;
 export function seed_rng(a: number, b: number): void;
-export function canvas_write_board(a: number, b: number): void;
 export function __wbindgen_malloc(a: number, b: number): number;
 export function __wbindgen_realloc(a: number, b: number, c: number, d: number): number;
 export function __wbindgen_add_to_stack_pointer(a: number): number;

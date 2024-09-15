@@ -395,12 +395,13 @@ impl Board {
                 }
                 to_fill[candidate] = None;
                 if possible.count_ones() == 1 {
-                    return Err(WfcStepError::NoMoreChoices);
+                    Err(WfcStepError::NoMoreChoices)
                 } else {
-                    return Err(WfcStepError::ChoiceUnsuccessful);
+                    Err(WfcStepError::ChoiceUnsuccessful)
                 }
+            } else {
+                Ok(candidate)
             }
-            return Ok(candidate);
         } else {
             panic!("no possibilities found, which should already be handled");
         }

@@ -128,6 +128,7 @@ export interface InitOutput {
   readonly canvas_handle_keypress: (a: number, b: number, c: number) => void;
   readonly canvas_check_all_connected: (a: number) => number;
   readonly canvas_game_won: (a: number) => number;
+  readonly canvas_write_board: (a: number, b: number) => void;
   readonly canvas_read_board: (a: number, b: number, c: number) => void;
   readonly canvas_gen_filled_board: (a: number, b: number) => number;
   readonly canvas_gen_new_board: (a: number, b: number) => number;
@@ -138,7 +139,6 @@ export interface InitOutput {
   readonly canvas_remove_dot_at: (a: number, b: number, c: number) => void;
   readonly canvas_remap_color_palette: (a: number, b: number, c: number) => void;
   readonly seed_rng: (a: number, b: number) => void;
-  readonly canvas_write_board: (a: number, b: number) => void;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
   readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
