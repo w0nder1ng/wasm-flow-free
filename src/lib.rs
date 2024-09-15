@@ -1,20 +1,19 @@
-mod utils;
 use bitvec::prelude::*;
-use rand::{
-    distributions::{Distribution, WeightedIndex},
-    seq::SliceRandom,
-    thread_rng, Rng,
-};
+use rand::{seq::SliceRandom, Rng};
 use std::{
     collections::{HashMap, HashSet},
     convert::{TryFrom, TryInto},
+    sync::{LazyLock, Mutex},
 };
+type Pcg = rand_pcg::Pcg32;
 use wasm_bindgen::prelude::*;
 const SPRITE_SIZE: usize = 40;
 const SPRITE_SCALE: usize = 1;
 const FLOW_SIZE: usize = SPRITE_SIZE * SPRITE_SCALE;
 const BORDER_SIZE: usize = 1;
 const BORDER_FILL: u16 = 0xccc;
+static ENTROPY_SOURCE: LazyLock<Mutex<Pcg>> =
+    LazyLock::new(|| Mutex::new(Pcg::new(0xcafef00dd15ea5e5, 0xa02bdbf7bb3c0a7)));
 
 #[wasm_bindgen]
 extern "C" {
@@ -221,6 +220,14 @@ impl FlowDir {
             FlowDir::UpDown => UPDOWN_ARR,
         })[idx]
     }
+    pub fn flow_type(self) -> Flow {
+        match self.num_connections() {
+            1 => Flow::Dot,
+            2 => Flow::Line,
+            0 => Flow::Empty,
+            _ => panic!("illegal number of connections when generating board"),
+        }
+    }
 }
 impl TryFrom<u32> for FlowDir {
     type Error = ();
@@ -264,6 +271,11 @@ impl Fill {
     }
 }
 
+enum WfcStepError {
+    ChoiceUnsuccessful,
+    NoMoreChoices,
+}
+
 #[derive(Clone, Debug)]
 pub struct Board {
     pub width: usize,
@@ -279,7 +291,7 @@ impl Default for Board {
 
 impl Board {
     const DOT_WEIGHT: f32 = 0.1;
-    const TURN_WEIGHT: f32 = 0.75;
+    const TURN_WEIGHT: f32 = 0.4;
     const LINE_WEIGHT: f32 = 1.0;
     #[rustfmt::skip]
     pub const WEIGHTS: [f32; 10] = [
@@ -302,14 +314,106 @@ impl Board {
     pub fn as_dirs_grid(&self) -> Vec<FlowDir> {
         self.fills.iter().map(|val| val.dirs).collect()
     }
-    pub fn wfc_gen_dirty(width: usize, height: usize) -> Vec<FlowDir> {
-        let mut rng = thread_rng();
+
+    /// take one step in the wave function collapse algorithm.
+    /// if it succeeded, return the filled-in index and set things as appropriate.
+    /// if it failed, return None and undo all changes, removing the invalid choice from the possibilities
+    fn wfc_step(
+        to_fill: &mut [Option<FlowDir>],
+        all_candidates: &mut [u32],
+        grid_w: usize,
+        grid_h: usize,
+        rng: &mut impl Rng,
+    ) -> Result<usize, WfcStepError> {
+        let mut min_entropy = 11; // # of possibilities + 1
+        let mut choices = Vec::new();
+        for (i, item) in all_candidates.iter().enumerate() {
+            if to_fill[i].is_none() {
+                match item.count_ones() {
+                    val if val < min_entropy => {
+                        min_entropy = val;
+                        choices.clear();
+                        choices.push(i);
+                    }
+                    val if val == min_entropy => {
+                        choices.push(i);
+                    }
+                    _ => (),
+                }
+            }
+        }
+        let candidate = *choices.choose(rng).unwrap();
+        // 0: left, 1: right, 2: up, 3: down, 4: left-right, 5: left-up,
+        // 6: left-down, 7: right-up, 8: right-down, 9: up-down
+        let possible: u32 = all_candidates[candidate];
+
+        if possible != 0 {
+            let choices_indices = (0..10).filter(|i| possible & (1 << i) != 0);
+            let choice = reservoir_sample(choices_indices, &Self::WEIGHTS, rng).expect("brokey");
+
+            to_fill[candidate] = Some(FlowDir::ALL_DIRS[choice]);
+            all_candidates[candidate] = 1 << choice;
+
+            let permissible = |could_be: u32, delta: FlowDir| {
+                let mut capable = 0;
+                for i in 0..10 {
+                    if could_be & (1 << i) != 0 {
+                        capable |= FlowDir::ALL_DIRS[i].allowed_adjacent(delta);
+                    }
+                }
+                capable
+            };
+            let mut to_check = vec![candidate];
+            let mut former_values: HashMap<usize, u32> = HashMap::new();
+            former_values.insert(candidate, possible ^ (1 << choice));
+            while let Some(item) = to_check.pop() {
+                for &change_dir in FlowDir::NBR_DIRS
+                    .iter()
+                    .filter(|dir| to_fill[dir.nbr_of(item, grid_w, grid_h).unwrap()].is_none())
+                {
+                    let possible_nbr = change_dir.nbr_of(item, grid_w, grid_h).unwrap();
+                    let old_possible = all_candidates[possible_nbr];
+                    let new_possible = permissible(all_candidates[item], change_dir);
+                    if new_possible & old_possible != old_possible {
+                        let _ = former_values
+                            .entry(possible_nbr)
+                            .or_insert(all_candidates[possible_nbr]);
+                        all_candidates[possible_nbr] &= new_possible;
+                        to_check.push(possible_nbr);
+                    }
+                }
+            }
+            if former_values
+                .keys()
+                .any(|updated_val| all_candidates[*updated_val] == 0)
+            {
+                // because there are no options, we've made a contradiction
+                // FRANTIC UNDOING
+                for (k, v) in former_values {
+                    // hopefully should undo everything?
+                    all_candidates[k] = v;
+                }
+                to_fill[candidate] = None;
+                if possible.count_ones() == 1 {
+                    return Err(WfcStepError::NoMoreChoices);
+                } else {
+                    return Err(WfcStepError::ChoiceUnsuccessful);
+                }
+            }
+            return Ok(candidate);
+        } else {
+            panic!("no possibilities found, which should already be handled");
+        }
+    }
+    pub fn wfc_gen_dirty(width: usize, height: usize, rng: &mut impl Rng) -> Vec<FlowDir> {
+        const MAX_ITERS: i32 = 1_000;
         let grid_w = width + 2;
         let grid_h = height + 2;
         let mut to_fill: Vec<Option<FlowDir>> = Vec::new();
         'attempts: for num_iters in 0.. {
-            if num_iters > 1_000 {
-                panic!("failed to generate");
+            if num_iters >= MAX_ITERS {
+                // equivalent to panic-ing, but won't crash the rest of the program hopefully
+                return vec![FlowDir::UpDown; width * height];
             }
             to_fill = vec![None; grid_w * grid_h];
             let mut all_candidates: Vec<u32> = vec![(1 << 10) - 1; grid_w * grid_h];
@@ -334,61 +438,11 @@ impl Board {
 
             // let mut ct = 0;
             while num_open > 0 {
-                let mut min_entropy = 11; // # of possibilities + 1
-                let mut choices = Vec::new();
-                for (i, item) in all_candidates.iter().enumerate() {
-                    if to_fill[i].is_none() {
-                        match item.count_ones() {
-                            val if val < min_entropy => {
-                                min_entropy = val;
-                                choices.clear();
-                                choices.push(i);
-                            }
-                            val if val == min_entropy => {
-                                choices.push(i);
-                            }
-                            _ => (),
-                        }
-                    }
-                }
-                let candidate = *choices.choose(&mut rng).unwrap();
-                // 0: left, 1: right, 2: up, 3: down, 4: left-right, 5: left-up,
-                // 6: left-down, 7: right-up, 8: right-down, 9: up-down
-                let possible: u32 = all_candidates[candidate];
-                if possible != 0 {
-                    let choices_indices = (0..10).filter(|i| possible & (1 << i) != 0);
-                    let choice =
-                        reservoir_sample(choices_indices, &Self::WEIGHTS, &mut rng).expect("");
-                    to_fill[candidate] = Some(FlowDir::ALL_DIRS[choice]);
-                    all_candidates[candidate] = 1 << choice;
-                    num_open -= 1;
-                    let permissible = |could_be: u32, delta: FlowDir| {
-                        let mut capable = 0;
-                        for i in 0..10 {
-                            if could_be & (1 << i) != 0 {
-                                capable |= FlowDir::ALL_DIRS[i].allowed_adjacent(delta);
-                            }
-                        }
-                        capable
-                    };
-                    let mut to_check = vec![candidate];
-
-                    while let Some(item) = to_check.pop() {
-                        for &change_dir in FlowDir::NBR_DIRS.iter().filter(|dir| {
-                            to_fill[dir.nbr_of(item, grid_w, grid_h).unwrap()].is_none()
-                        }) {
-                            let possible_nbr = change_dir.nbr_of(item, grid_w, grid_h).unwrap();
-                            let old_possible = all_candidates[possible_nbr];
-                            let new_possible = permissible(all_candidates[item], change_dir);
-                            if new_possible & old_possible != old_possible {
-                                all_candidates[possible_nbr] &= new_possible;
-                                to_check.push(possible_nbr);
-                            }
-                        }
-                    }
-                } else {
-                    // because there are no options, we've made a contradiction
-                    continue 'attempts;
+                let res = Self::wfc_step(&mut to_fill, &mut all_candidates, grid_w, grid_h, rng);
+                match res {
+                    Ok(_candidate) => num_open -= 1,
+                    Err(WfcStepError::ChoiceUnsuccessful) => {}
+                    Err(WfcStepError::NoMoreChoices) => continue 'attempts,
                 }
             }
             if !to_fill.contains(&None) {
@@ -405,6 +459,7 @@ impl Board {
 
     fn get_paths(dirs_grid: &[FlowDir], width: usize, height: usize) -> Vec<Vec<usize>> {
         // NOTE: this is no longer in sorted order, so we have to think about that
+        // TODO: fix this function so it works pretty please :)
         let mut paths: Vec<Vec<usize>> = Vec::new();
         let mut checked = bitvec![0; (width*height)];
         while checked.count_zeros() != 0 {
@@ -529,28 +584,23 @@ impl Board {
         // log("exited loop/intersect");
     }
 
-    pub fn gen_filled_board(width: usize, height: usize) -> Self {
+    pub fn gen_filled_board(width: usize, height: usize, rng: &mut impl Rng) -> Self {
         // 0: left, 1: right, 2: up, 3: down, 4: left-right, 5: left-up,
         // 6: left-down, 7: right-up, 8: right-down, 9: up-down, 10: unconnected
         let mut board = Self::new(width, height); // guarantees width/height are positive
+
         let (width, height) = (width, height);
-        let mut dirs_dirty = Self::wfc_gen_dirty(width, height);
+        let mut dirs_dirty = Self::wfc_gen_dirty(width, height, rng);
+
         let mut paths = Self::get_paths(&dirs_dirty, width, height);
         Self::split_loops_and_intersects(&mut dirs_dirty, &mut paths, width, height);
-        // for i in 0..dirs_dirty.len() {
+
         for (i, &dir) in dirs_dirty.iter().enumerate() {
-            board.fills[i] = Fill::new(
-                0xfff,
-                match dir.num_connections() {
-                    1 => Flow::Dot,
-                    2 => Flow::Line,
-                    0 => Flow::Empty,
-                    _ => panic!("illegal number of connections when generating board"),
-                },
-                dir,
-            )
+            board.fills[i] = Fill::new(0xfff, dir.flow_type(), dir)
         }
-        let palette = get_color_palette(paths.len());
+
+        let palette = get_color_palette(paths.len(), rng)
+            .unwrap_or_else(|| vec![rng.gen::<u16>() & 0xfff; paths.len()]);
         for (i, path) in paths.iter().enumerate() {
             for pos in path {
                 board.fills[*pos].color = palette[i];
@@ -568,7 +618,7 @@ impl Board {
         // no paths that are next to themselves
         // no flows that aren't connected to a dot
 
-        true
+        todo!()
     }
     pub fn get_fill(&self, x: usize, y: usize) -> Fill {
         self.fills[y * self.width + x]
@@ -845,23 +895,38 @@ impl Board {
             let color = packed >> 4;
             board.fills[(i - 8) / 2] = Fill::new(color, flow, FlowDir::try_from(dirs as u32).ok()?);
         }
-
-        if !Self::verify_valid(&board) {
-            None
-        } else {
-            Some(board)
-        }
+        Some(board)
+        // if !Self::verify_valid(&board) {
+        //     None
+        // } else {
+        //     Some(board)
+        // }
     }
 }
 
 #[wasm_bindgen]
-#[derive(Default)]
 pub struct Canvas {
     board: Board,
     pix_buf: Vec<u8>,
     rendered_flow_cache: HashMap<Fill, [u32; FLOW_SIZE * FLOW_SIZE]>,
     current_pos: Option<(usize, usize)>,
     is_mouse_down: bool,
+    rng: Pcg,
+}
+impl Default for Canvas {
+    fn default() -> Self {
+        let mut rng = ENTROPY_SOURCE.lock().unwrap();
+        let seed: u64 = rng.gen();
+        let stream: u64 = rng.gen();
+        Self {
+            rng: Pcg::new(seed, stream),
+            board: Default::default(),
+            pix_buf: Default::default(),
+            rendered_flow_cache: Default::default(),
+            current_pos: Default::default(),
+            is_mouse_down: Default::default(),
+        }
+    }
 }
 
 #[wasm_bindgen]
@@ -874,11 +939,11 @@ impl Canvas {
         let r = (((input >> 8) & 0xf) << 4) as u32;
         let g = (((input >> 4) & 0xf) << 4) as u32;
         let b = ((input & 0xf) << 4) as u32;
-        r << 24 | g << 16 | b << 8 | 0xff
+        const CENTER_NUMS: u32 = 0x07070700;
+        r << 24 | g << 16 | b << 8 | 0xff | CENTER_NUMS
     }
 
     pub fn new(width: usize, height: usize) -> Self {
-        utils::set_panic_hook();
         let (width, height) = (width, height);
         let board = Board::new(width, height);
         let total_width = board.width * FLOW_SIZE + (board.width - 1) * BORDER_SIZE;
@@ -1143,7 +1208,7 @@ impl Canvas {
 
     pub fn gen_filled_board(width: usize, height: usize) -> Self {
         let mut canvas = Canvas::new(width, height);
-        canvas.board = Board::gen_filled_board(width, height);
+        canvas.board = Board::gen_filled_board(width, height, &mut canvas.rng);
         canvas
     }
 
@@ -1223,7 +1288,9 @@ impl Canvas {
             .map(|fill| fill.color)
             .collect::<HashSet<u16>>();
         let num_colors = current_palette.len();
-        let new_palette = new_palette.unwrap_or_else(|| get_color_palette(num_colors));
+        let new_palette = new_palette.unwrap_or_else(|| {
+            get_color_palette(num_colors, &mut self.rng).expect("too many colors")
+        });
         if new_palette.len() < num_colors {
             return;
         }
@@ -1242,18 +1309,16 @@ impl Canvas {
     }
 }
 
-#[wasm_bindgen]
-pub fn get_color_palette(size: usize) -> Vec<u16> {
+fn get_color_palette(size: usize, rng: &mut impl Rng) -> Option<Vec<u16>> {
     // log(&format!("palette size: {}", size));
     const CLASSIC_COLORS: [u16; 16] = [
         0xf00, 0xff0, 0x13f, 0x0a0, 0xa33, 0xfa0, 0x0ff, 0xf0c, 0x808, 0xfff, 0xaaa, 0x0f0, 0xbb6,
         0x008, 0x088, 0xf19,
     ];
-    let mut rng = thread_rng();
-    if size < CLASSIC_COLORS.len() {
+    if size <= CLASSIC_COLORS.len() {
         let mut res = CLASSIC_COLORS[0..size].to_vec();
-        res.shuffle(&mut rng);
-        res
+        res.shuffle(rng);
+        Some(res)
     } else {
         let mut colors = Vec::with_capacity(size);
 
@@ -1261,34 +1326,46 @@ pub fn get_color_palette(size: usize) -> Vec<u16> {
         // log(&format!("h_step: {}", h_step));
 
         for i in 0..size {
-            for s_val in (3..=9).step_by(6) {
-                let (h, s, l) = (h_step * (i as f32), (s_val as f32) / 10.0, 0.5);
+            for s_val in [0.5, 0.95] {
+                let (h, s, l) = (h_step * (i as f32), s_val, 0.5);
                 // log(&format!("h{} s{} l{}", h, s, l));
                 colors.push(hsl_to_rgb16(h, s, l));
             }
         }
         colors.sort_unstable();
         colors.dedup();
-        colors.shuffle(&mut rng);
 
         if colors.len() < size {
             colors = Vec::with_capacity(11 * 11 * 11);
-            for r in 4..16 {
-                for g in 4..16 {
-                    for b in 4..16 {
+            for r in 4..=15 {
+                for g in 4..=15 {
+                    for b in 4..=15 {
                         colors.push(r << 8 | g << 4 | b);
                     }
                 }
             }
             // log(&format!("silly path: {}", colors.len()));
-            colors.shuffle(&mut rng);
         }
+        colors.shuffle(rng);
         colors.truncate(size);
-        assert_eq!(size, colors.len(), "could not create enough colors");
-        colors
+        if colors.len() < size {
+            None
+        } else {
+            Some(colors)
+        }
     }
 }
-
+#[wasm_bindgen]
+pub fn seed_rng(data: &[u8]) {
+    let mut rng = ENTROPY_SOURCE.lock().unwrap();
+    assert_eq!(data.len(), 8);
+    let data_raw: u64 = data
+        .iter()
+        .enumerate()
+        .map(|(i, dat)| (*dat as u64) << (8 * i))
+        .sum();
+    *rng = Pcg::new(data_raw, 0xa02bdbf7bb3c0a7);
+}
 fn hsl_to_rgb16(h: f32, s: f32, l: f32) -> u16 {
     // https://en.wikipedia.org/wiki/HSL_and_HSV#HSL_to_RGB
     let h = h.clamp(0.0, 360.0);
@@ -1296,14 +1373,14 @@ fn hsl_to_rgb16(h: f32, s: f32, l: f32) -> u16 {
     let l = l.clamp(0.0, 1.0);
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
     let h_prime = h / 60.0;
-    let x = c * (1.0 - (h_prime % 2.0 - 1.0).abs());
+    let x = c * (1.0 - ((h_prime % 2.0) - 1.0).abs());
     let (r1, g1, b1) = match h_prime {
-        0.0..=1.001 => (c, x, 0.0),
-        1.0..=2.001 => (x, c, 0.0),
-        2.0..=3.001 => (0.0, c, x),
-        3.0..=4.001 => (0.0, x, c),
-        4.0..=5.001 => (x, 0.0, c),
-        5.0..=6.001 => (c, 0.0, x),
+        0.0..1.0 => (c, x, 0.0),
+        1.0..=2.0 => (x, c, 0.0),
+        2.0..=3.0 => (0.0, c, x),
+        3.0..=4.0 => (0.0, x, c),
+        4.0..=5.0 => (x, 0.0, c),
+        5.0..=6.0 => (c, 0.0, x),
         _ => (c, 0.0, x),
     };
     let m = l - c / 2.0;

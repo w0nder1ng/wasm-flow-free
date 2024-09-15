@@ -7,11 +7,12 @@ use wasm_flow_free::{reservoir_sample, Board};
 #[allow(unused)]
 fn gen_boards(size: usize, num_iters: u128) {
     println!("generating boards of size {}x{}...", size, size);
+    let mut rng = thread_rng();
     let mut total_time = 0;
     for _ in 0..num_iters {
         let start = Instant::now();
 
-        let _board = black_box(Board::gen_filled_board(size, size));
+        let _board = black_box(Board::gen_filled_board(size, size, &mut rng));
         // println!("elapsed: {:.2?}", start.elapsed());
         total_time += start.elapsed().as_nanos();
     }

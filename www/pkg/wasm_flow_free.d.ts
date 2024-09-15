@@ -1,10 +1,9 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
-* @param {number} size
-* @returns {Uint16Array}
+* @param {Uint8Array} data
 */
-export function get_color_palette(size: number): Uint16Array;
+export function seed_rng(data: Uint8Array): void;
 /**
 */
 export class Canvas {
@@ -138,13 +137,12 @@ export interface InitOutput {
   readonly canvas_add_dot_at: (a: number, b: number, c: number, d: number) => void;
   readonly canvas_remove_dot_at: (a: number, b: number, c: number) => void;
   readonly canvas_remap_color_palette: (a: number, b: number, c: number) => void;
-  readonly get_color_palette: (a: number, b: number) => void;
+  readonly seed_rng: (a: number, b: number) => void;
   readonly canvas_write_board: (a: number, b: number) => void;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
   readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
   readonly __wbindgen_free: (a: number, b: number, c: number) => void;
-  readonly __wbindgen_exn_store: (a: number) => void;
 }
 
 export type SyncInitInput = BufferSource | WebAssembly.Module;

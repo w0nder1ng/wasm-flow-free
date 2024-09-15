@@ -9,3 +9,4 @@ default.profraw
 .ruff.toml
 board_link.txt
 pyrightconfig.json
+.idea/
