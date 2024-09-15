@@ -9,7 +9,7 @@ The site will be available at `localhost:8000`.
 
 ## TODO
 
-- fix mostly broken generator/editor
+- fix broken generator/editor
 - better editor
 - pre-generated levels list
 - better win screen/general UI

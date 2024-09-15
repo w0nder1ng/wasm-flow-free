@@ -594,7 +594,7 @@ impl Board {
 
         let mut paths = Self::get_paths(&dirs_dirty, width, height);
         Self::split_loops_and_intersects(&mut dirs_dirty, &mut paths, width, height);
-
+        // TODO: join trivially filled boards
         for (i, &dir) in dirs_dirty.iter().enumerate() {
             board.fills[i] = Fill::new(0xfff, dir.flow_type(), dir)
         }
@@ -808,7 +808,17 @@ impl Board {
         let (_, final_pos) = self.flood_search(pos_a);
         pos_b == final_pos
     }
-
+    pub fn is_attached_nbrs(&self, pos_a: usize, pos_b: usize) -> bool {
+        (pos_a % self.width).abs_diff(pos_b % self.width)
+            + (pos_a / self.width).abs_diff(pos_b / self.width)
+            == 1
+            && self.fills[pos_a]
+                .dirs
+                .is_connected(FlowDir::change_dir(pos_a, pos_b, self.width).unwrap())
+            && self.fills[pos_b]
+                .dirs
+                .is_connected(FlowDir::change_dir(pos_b, pos_a, self.width).unwrap())
+    }
     fn check_all_connected(&self) -> bool {
         let mut map = HashMap::new();
         for i in 0..(self.width * self.height) {
@@ -1108,26 +1118,27 @@ impl Canvas {
         };
         let diff_x = current_x.abs_diff(x);
         let diff_y = current_y.abs_diff(y);
+        let changed_x = match x > current_x {
+            true => current_x + 1,
+            false => current_x - 1,
+        };
+        let changed_y = match y > current_y {
+            true => current_y + 1,
+            false => current_y - 1,
+        };
         let (x, y) = match diff_x + diff_y {
             0 => return, // no change in position, so we're done
             1 => (x, y), // if diff is only one, we don't have to actually choose
             _ => {
-                if diff_x >= diff_y {
-                    (
-                        match x > current_x {
-                            true => current_x + 1,
-                            false => current_x - 1,
-                        },
-                        current_y,
-                    )
+                if diff_x >= diff_y
+                    && (self.board.is_attached_nbrs(
+                        changed_x + self.board.width * current_y,
+                        current_x + self.board.width * current_y,
+                    ) || self.board.get_fill(changed_x, current_y).flow == Flow::Empty)
+                {
+                    (changed_x, current_y)
                 } else {
-                    (
-                        current_x,
-                        match y > current_y {
-                            true => current_y + 1,
-                            false => current_y - 1,
-                        },
-                    )
+                    (current_x, changed_y)
                 }
             }
         };
