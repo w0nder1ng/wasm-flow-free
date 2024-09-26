@@ -196,7 +196,8 @@
             let board = canvas.to_bytes();
             let b64 = bytesToBase64(board);
             params.set("board", b64);
-            params.set("size", grid_size);
+            params.set("width", grid_width);
+            params.set("height", grid_height);
             await navigator.clipboard.writeText(
                 window.location.href.split("?")[0] +
                 "?" +
@@ -205,7 +206,7 @@
         });
         save_button.addEventListener("click", function () {
             let board = canvas.to_bytes();
-            saveByteArray(`${grid_size}x${grid_size}.ffsave`, board);
+            saveByteArray(`${grid_width}x${grid_height}.ffsave`, board);
         });
         load_button.addEventListener("click", function () {
             let input = document.createElement("input");

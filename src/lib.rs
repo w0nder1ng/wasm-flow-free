@@ -7,6 +7,7 @@ use std::{
     collections::{HashMap, HashSet},
     convert::{TryFrom, TryInto},
     fmt::{Display, Error, Formatter, Write},
+    io::{Cursor, Read},
     sync::{LazyLock, Mutex},
 };
 type Pcg = rand_pcg::Pcg32;
@@ -16,6 +17,8 @@ const SPRITE_SCALE: usize = 1;
 const FLOW_SIZE: usize = SPRITE_SIZE * SPRITE_SCALE;
 const BORDER_SIZE: usize = 1;
 const BORDER_FILL: u16 = 0xccc;
+const FLOW_FREE_HEADER: &[u8; 8] = b"FFBOARD\x97";
+const BOARD_FORMAT_VERSION: u32 = 0x01;
 static ENTROPY_SOURCE: LazyLock<Mutex<Pcg>> =
     LazyLock::new(|| Mutex::new(Pcg::new(0xcafef00dd15ea5e5, 0xa02bdbf7bb3c0a7)));
 
@@ -1021,6 +1024,8 @@ impl Board {
     */
     fn write_board(&self) -> Vec<u8> {
         let mut serialized: Vec<u8> = Vec::new();
+        serialized.extend(FLOW_FREE_HEADER);
+        serialized.extend(BOARD_FORMAT_VERSION.to_be_bytes());
         serialized.extend((self.width as u32).to_be_bytes().iter());
         serialized.extend((self.height as u32).to_be_bytes().iter());
         for fill in &self.fills {
@@ -1029,7 +1034,6 @@ impl Board {
             if fill.flow == Flow::Dot {
                 dirs_info = !dirs_info & 0xf
             }
-
             fill_data |= dirs_info as u16;
             fill_data |= (fill.color & 0xfff) << 4;
             serialized.extend(fill_data.to_be_bytes().iter());
@@ -1038,20 +1042,35 @@ impl Board {
     }
 
     fn read_board(serialized: &[u8]) -> Option<Self> {
+        let mut cursor = Cursor::new(serialized);
+        let mut scratch_buf = [0u8; 8];
+        // read the header
+        cursor.read_exact(&mut scratch_buf).ok()?;
+        if &scratch_buf != FLOW_FREE_HEADER {
+            return None;
+        }
+        // read version number
+        cursor.read_exact(&mut scratch_buf[..4]).ok()?;
+        if scratch_buf[..4] != BOARD_FORMAT_VERSION.to_be_bytes() {
+            return None;
+        }
         let width: usize = {
-            let w: &[u8; 4] = serialized[0..4].try_into().ok()?;
+            cursor.read_exact(&mut scratch_buf[..4]).ok()?;
+            let w: &[u8; 4] = scratch_buf[..4].try_into().ok()?;
             u32::from_be_bytes(*w) as usize
         };
         let height: usize = {
-            let h: &[u8; 4] = serialized[4..8].try_into().ok()?;
+            cursor.read_exact(&mut scratch_buf[..4]).ok()?;
+            let h: &[u8; 4] = scratch_buf[..4].try_into().ok()?;
             u32::from_be_bytes(*h) as usize
         };
         let mut board = Board::new(width, height);
-        if width * height != (serialized.len() - 8) / 2 {
+        let pos: usize = cursor.position().try_into().ok()?;
+        if 2 * width * height != serialized.len() - pos {
             return None;
         }
-        for i in (8..serialized.len()).step_by(2) {
-            let packed = u16::from_be_bytes(serialized[i..i + 2].try_into().ok()?);
+        for (i, b) in serialized[pos..].chunks(2).enumerate() {
+            let packed = u16::from_be_bytes(b.try_into().ok()?);
             let mut dirs = packed & 0xf;
             let flow = match dirs.count_ones() {
                 0 => Flow::Empty,
@@ -1065,7 +1084,7 @@ impl Board {
                 }
             };
             let color = packed >> 4;
-            board.fills[(i - 8) / 2] = Fill::new(color, flow, FlowDir::try_from(dirs as u32).ok()?);
+            board.fills[i] = Fill::new(color, flow, FlowDir::try_from(dirs as u32).ok()?);
         }
         Some(board)
         // if !Self::verify_valid(&board) {
@@ -1430,8 +1449,8 @@ impl Canvas {
     pub fn from_bytes(&mut self, board: &[u8]) {
         assert_eq!(board.len() % 2, 0, "invalid length");
 
-        let stated_w = u32::from_be_bytes(board[0..4].try_into().unwrap());
-        let stated_h = u32::from_be_bytes(board[4..8].try_into().unwrap());
+        let stated_w = u32::from_be_bytes(board[12..12 + 4].try_into().unwrap());
+        let stated_h = u32::from_be_bytes(board[12 + 4..12 + 4 + 4].try_into().unwrap());
 
         if stated_w != self.board.width as u32 || stated_h != self.board.height as u32 {
             self.resize(stated_w as usize, stated_h as usize);
