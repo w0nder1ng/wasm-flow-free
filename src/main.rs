@@ -9,18 +9,26 @@ fn gen_boards(size: usize, num_iters: u128) {
     println!("generating boards of size {}x{}...", size, size);
     let mut rng = thread_rng();
     let mut total_time = 0;
-    for _ in 0..num_iters {
+    for pos in 0..num_iters {
         let start = Instant::now();
 
-        let _board = black_box(Board::gen_filled_board(size, size, &mut rng));
+        let board = black_box(Board::gen_filled_board(size, size, &mut rng));
+        // if pos == 0 {
+        //     println!("{board}");
+        // }
         // println!("elapsed: {:.2?}", start.elapsed());
         total_time += start.elapsed().as_nanos();
     }
     println!(
-        "average of {:?} ms/iter",
+        "average of {:?}/iter",
         Duration::from_nanos((total_time / num_iters).try_into().unwrap())
     );
+    println!(
+        "for a total of {:?}",
+        Duration::from_nanos(total_time.try_into().unwrap())
+    );
 }
+#[allow(unused)]
 fn test_reservoir_sample(num_iters: u128) {
     const NUM_WEIGHTS: usize = 10;
     let mut chosen = [0u128; NUM_WEIGHTS];
@@ -66,6 +74,6 @@ fn test_reservoir_sample(num_iters: u128) {
 }
 
 fn main() {
-    gen_boards(40, 200);
+    gen_boards(15, 10_000);
     // test_reservoir_sample(1_000_000);
 }

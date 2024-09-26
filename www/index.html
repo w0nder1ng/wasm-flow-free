@@ -20,17 +20,25 @@
     <canvas id="draw"></canvas>
     <br />
     <div>
+        <button id="new-btn">New puzzle</button>
+        <button id="solve-btn">Give me a hint</button>
+        <br>
+        <label for="grid-w" id="grid-w-label">Grid width (5)</label>
+        <input type="range" min="3" max="40" value="5" id="grid-w" />
+        <br>
+        <label for="grid-h" id="grid-h-label">Grid height (5)</label>
+        <input type="range" min="3" max="40" value="5" id="grid-h" />
+        <br>
         <button id="copy-btn">Copy puzzle URL to clipboard</button>
         <button id="save-btn">Export puzzle</button>
-        <br />
         <button id="load-btn">Load puzzle</button>
         <br />
-        <label for="grid-size">Enter size of grid:</label>
-        <input type="number" id="grid-size" />
-        <button id="new-btn">New puzzle</button>
+        <input type="checkbox" id="aspect-lock" checked>
+        <label for="aspect-lock" id="aspect-lock-label">Lock board to square shape</label>
+        <input type="checkbox" id="size-max-lock" checked>
+        <label for="size-max-lock" id="size-max-lock-label">Lock board size to 40</label>
     </div>
-    <noscript>This page contains webassembly and javascript content, please
-        enable javascript in your browser.</noscript>
+    <noscript>This page requires webassembly and javascript to function.</noscript>
     <script type="module">
         import init, { Canvas, seed_rng } from "./pkg/wasm_flow_free.js";
 
@@ -57,33 +65,68 @@
         const draw = document.getElementById("draw");
         const ctx = draw.getContext("2d");
 
-        const copybtn = document.getElementById("copy-btn");
-        const savebtn = document.getElementById("save-btn");
-        const loadbtn = document.getElementById("load-btn");
-        const gridsize = document.getElementById("grid-size");
-        const newbtn = document.getElementById("new-btn");
+        const copy_button = document.getElementById("copy-btn");
+        const save_button = document.getElementById("save-btn");
+        const load_button = document.getElementById("load-btn");
+        const new_puzzle_button = document.getElementById("new-btn");
+        const hint_button = document.getElementById("solve-btn");
+
+        const grid_width_slider = document.getElementById("grid-w");
+        const grid_height_slider = document.getElementById("grid-h");
+
+        const grid_width_label = document.getElementById("grid-w-label");
+        const grid_height_label = document.getElementById("grid-h-label");
+
+        const aspect_lock = document.getElementById("aspect-lock");
+        const size_max_lock = document.getElementById("size-max-lock");
+        const size_max_lock_label = document.getElementById("size-max-lock-label");
+        const size_large = 120;
+        const size_small = 30;
+        size_max_lock_label.innerText = `Lock board size to ${size_small}`;
+        if (size_max_lock.checked == false) {
+            grid_width_slider.max = size_large;
+            grid_height_slider.max = size_large;
+        } else {
+            grid_width_slider.max = size_small;
+            grid_height_slider.max = size_small;
+        }
+
 
         let wasm = await init();
         let memory = wasm.memory;
-
         let vals = new Uint8Array(8);
         self.crypto.getRandomValues(vals);
         seed_rng(vals);
 
-        let grid_size = 5;
+        let grid_width = 5;
+        let grid_height = 5;
+        grid_width_slider.value = grid_width.toString();
+        grid_height_slider.value = grid_height.toString();
+        grid_width_label.innerText = `Grid width (${grid_width})`;
+        grid_height_label.innerText = `Grid height (${grid_height})`;
+
         const use_filled = false;
         let canvas = use_filled
-            ? Canvas.gen_filled_board(grid_size, grid_size)
-            : Canvas.gen_new_board(grid_size, grid_size);
+            ? Canvas.gen_filled_board(grid_width, grid_height)
+            : Canvas.gen_new_board(grid_width, grid_height);
         if (window.location.search) {
             let params = new URLSearchParams(window.location.search);
-            if (!params.has("size") || !params.has("board")) {
+            if ((!params.has("size") && !(params.has("width") && params.has("height"))) || !params.has("board")) {
                 console.log("Invalid URL");
             } else {
-                let size = parseInt(params.get("size"));
                 const board = base64ToBytes(params.get("board"));
-                grid_size = size;
-                canvas.resize(size, size);
+                if (params.has("size")) {
+                    let size = parseInt(params.get("size"));
+
+                    grid_width = size;
+                    grid_height = size;
+                } else {
+                    grid_width = parseInt(params.get("width"));
+                    grid_height = parseInt(params.get("height"));
+                }
+                grid_width_label.innerText = `Grid width (${grid_width})`;
+                grid_height_label.innerText = `Grid width (${grid_height})`;
+                canvas.resize(grid_width, grid_height);
                 canvas.from_bytes(board);
                 window.history.replaceState(
                     {},
@@ -92,7 +135,6 @@
                 );
             }
         }
-        gridsize.setAttribute("placeholder", grid_size);
 
         let buffer = new Uint8ClampedArray(
             memory.buffer,
@@ -146,7 +188,10 @@
                 e.preventDefault();
             }
         });
-        copybtn.addEventListener("click", async function () {
+        hint_button.addEventListener("click", function () {
+            canvas.hint();
+        })
+        copy_button.addEventListener("click", async function () {
             let params = new URLSearchParams();
             let board = canvas.to_bytes();
             let b64 = bytesToBase64(board);
@@ -158,11 +203,11 @@
                 params.toString(),
             );
         });
-        savebtn.addEventListener("click", function () {
+        save_button.addEventListener("click", function () {
             let board = canvas.to_bytes();
             saveByteArray(`${grid_size}x${grid_size}.ffsave`, board);
         });
-        loadbtn.addEventListener("click", function () {
+        load_button.addEventListener("click", function () {
             let input = document.createElement("input");
             input.type = "file";
 
@@ -184,26 +229,34 @@
                         canvas.canvas_width(),
                         canvas.canvas_height(),
                     );
-                    grid_size = canvas.width();
-                    if (gridsize.value == "") {
-                        gridsize.setAttribute("placeholder", grid_size);
-                    } else {
-                        gridsize.value = grid_size;
-                    }
+
+                    grid_width = canvas.width();
+                    grid_height = canvas.height();
+                    grid_width_slider.value = grid_width.toString();
+                    grid_height_slider.value = grid_height.toString();
+                    grid_width_label.innerText = `Grid width (${grid_width})`;
+                    grid_height_label.innerText = `Grid width (${grid_height})`;
                     canvas.render();
                 });
             };
 
             input.click();
         });
-
-        gridsize.addEventListener("change", function () {
-            grid_size = parseInt(gridsize.value);
-            canvas.resize(grid_size, grid_size);
-            canvas.render();
+        function update_wh_and_resize(event) {
+            if (aspect_lock.checked == true) {
+                grid_width = parseInt(event.target.value);
+                grid_height = parseInt(event.target.value);
+                grid_width_slider.value = grid_width;
+                grid_height_slider.value = grid_height;
+            } else {
+                grid_width = parseInt(grid_width_slider.value);
+                grid_height = parseInt(grid_height_slider.value);
+            }
+            grid_width_label.innerText = `Grid width (${grid_width})`;
+            grid_height_label.innerText = `Grid height (${grid_height})`;
+            canvas.resize(grid_width, grid_height);
             draw.width = canvas.canvas_width();
             draw.height = canvas.canvas_height();
-
             buffer = new Uint8ClampedArray(
                 memory.buffer,
                 canvas.get_pix_buf(),
@@ -216,13 +269,25 @@
             );
 
             canvas.render();
-        });
+        }
+        grid_width_slider.addEventListener("change", update_wh_and_resize);
+        grid_height_slider.addEventListener("change", update_wh_and_resize);
 
-        newbtn.addEventListener("click", function () {
-            canvas.resize(grid_size, grid_size);
+        size_max_lock.addEventListener("change", (event) => {
+            console.log("fired");
+            if (event.target.checked == false) {
+                grid_width_slider.max = size_large;
+                grid_height_slider.max = size_large;
+            } else {
+                grid_width_slider.max = size_small;
+                grid_height_slider.max = size_small;
+            }
+        })
+        new_puzzle_button.addEventListener("click", function () {
+            // canvas.resize(grid_width, grid_height);
             canvas = use_filled
-                ? Canvas.gen_filled_board(grid_size, grid_size)
-                : Canvas.gen_new_board(grid_size, grid_size);
+                ? Canvas.gen_filled_board(grid_width, grid_height)
+                : Canvas.gen_new_board(grid_width, grid_height);
             buffer = new Uint8ClampedArray(
                 memory.buffer,
                 canvas.get_pix_buf(),

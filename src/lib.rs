@@ -1,8 +1,12 @@
-use bitvec::prelude::*;
-use rand::{seq::SliceRandom, Rng};
+use bitvec::{bitvec, vec::BitVec};
+use rand::{
+    seq::{IteratorRandom, SliceRandom},
+    Rng,
+};
 use std::{
     collections::{HashMap, HashSet},
     convert::{TryFrom, TryInto},
+    fmt::{Display, Error, Formatter, Write},
     sync::{LazyLock, Mutex},
 };
 type Pcg = rand_pcg::Pcg32;
@@ -23,6 +27,9 @@ extern "C" {
     fn log(s: &str);
 }
 
+fn is_nbr(pos_a: usize, pos_b: usize, width: usize) -> bool {
+    (pos_a % width).abs_diff(pos_b % width) + (pos_a / width).abs_diff(pos_b / width) == 1
+}
 pub fn reservoir_sample(
     mut to_sample: impl Iterator<Item = usize>,
     weights: &[f32],
@@ -59,6 +66,23 @@ pub enum FlowDir {
     RightDown = 0b1010,
 }
 
+impl Display for FlowDir {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
+        f.write_char(match self {
+            FlowDir::Left => '<',
+            FlowDir::Right => '>',
+            FlowDir::Up => '^',
+            FlowDir::Down => 'v',
+            FlowDir::LeftRight => '═',
+            FlowDir::LeftUp => '╝',
+            FlowDir::LeftDown => '╗',
+            FlowDir::RightUp => '╚',
+            FlowDir::RightDown => '╔',
+            FlowDir::UpDown => '║',
+            FlowDir::Detached => ' ',
+        })
+    }
+}
 impl FlowDir {
     pub const NBR_DIRS: [FlowDir; 4] = [FlowDir::Left, FlowDir::Right, FlowDir::Up, FlowDir::Down];
     #[rustfmt::skip]
@@ -69,36 +93,15 @@ impl FlowDir {
         FlowDir::UpDown,
         FlowDir::Detached,
     ];
-    pub fn grid_str(grid: Vec<FlowDir>, width: usize) -> String {
-        let char_map = |dir| match dir {
-            FlowDir::Left => '<',
-            FlowDir::Right => '>',
-            FlowDir::Up => '^',
-            FlowDir::Down => 'v',
-            FlowDir::LeftRight => '-',
-            FlowDir::LeftUp => '⅃',
-            FlowDir::LeftDown => '⅂',
-            FlowDir::RightUp => 'L',
-            FlowDir::RightDown => 'F',
-            FlowDir::UpDown => '|',
-            FlowDir::Detached => ' ',
-        };
-        let mut res = String::new();
-        for (pos, c) in grid.iter().enumerate() {
-            res.push(char_map(*c));
-            if pos % width == width - 1 {
-                res.push('\n');
-            }
-        }
-        res
-    }
     pub const fn num_connections(self) -> usize {
         (self as u8).count_ones() as usize
     }
     pub fn try_connect(self, other_direction: FlowDir) -> Option<Self> {
-        if other_direction.num_connections() != 1 {
-            return None;
-        }
+        assert_eq!(
+            other_direction.num_connections(),
+            1,
+            "other direction must only have one connection"
+        );
         FlowDir::try_from((self as u8 | other_direction as u8) as u32).ok()
     }
     pub fn is_connected(self, other_direction: FlowDir) -> bool {
@@ -258,7 +261,7 @@ pub enum Flow {
     Empty = 0,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Fill {
     color: u16,
     flow: Flow,
@@ -271,9 +274,19 @@ impl Fill {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
 enum WfcStepError {
     ChoiceUnsuccessful,
     NoMoreChoices,
+}
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
+pub enum InvalidBoardError {
+    UnpairedDots,
+    Loop,
+    SelfAdjacentPath,
+    DisconnectedFlow,
+    DifferentColorConnection,
+    UnmatchedConnection,
 }
 
 #[derive(Clone, Debug)]
@@ -289,10 +302,21 @@ impl Default for Board {
     }
 }
 
+impl Display for Board {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
+        for (i, fill) in self.fills.iter().enumerate() {
+            fill.dirs.fmt(f)?;
+            if i % self.width == self.width - 1 {
+                f.write_char('\n')?;
+            }
+        }
+        Ok(())
+    }
+}
 impl Board {
     const DOT_WEIGHT: f32 = 0.1;
-    const TURN_WEIGHT: f32 = 0.4;
-    const LINE_WEIGHT: f32 = 1.0;
+    const TURN_WEIGHT: f32 = 1.0;
+    const LINE_WEIGHT: f32 = 1.5;
     #[rustfmt::skip]
     pub const WEIGHTS: [f32; 10] = [
         Self::DOT_WEIGHT, Self::DOT_WEIGHT,Self::DOT_WEIGHT,Self::DOT_WEIGHT,
@@ -300,6 +324,7 @@ impl Board {
         Self::TURN_WEIGHT, Self::TURN_WEIGHT, Self::TURN_WEIGHT,Self::TURN_WEIGHT,
         Self::LINE_WEIGHT,
     ];
+
     pub fn new(width: usize, height: usize) -> Self {
         if width * height < 2 {
             panic!("board too small")
@@ -388,9 +413,8 @@ impl Board {
                 .any(|updated_val| all_candidates[*updated_val] == 0)
             {
                 // because there are no options, we've made a contradiction
-                // FRANTIC UNDOING
+                // undo all changes and return the appropriate error
                 for (k, v) in former_values {
-                    // hopefully should undo everything?
                     all_candidates[k] = v;
                 }
                 to_fill[candidate] = None;
@@ -457,14 +481,45 @@ impl Board {
             .collect();
         no_borders.expect("only breaks from loop if no None values")
     }
-
+    pub fn from_dirs_grid(dirs_grid: &[FlowDir], width: usize, height: usize) -> Self {
+        let mut to_ret = Self::new(width, height);
+        for (i, dir) in dirs_grid.iter().enumerate() {
+            to_ret.fills[i].dirs = *dir;
+        }
+        let paths = Board::get_paths(dirs_grid, width, height);
+        let rng = &mut Pcg::new(0, 0);
+        let palette = get_color_palette(paths.len(), rng)
+            .unwrap_or_else(|| vec![rng.gen::<u16>() & 0xfff; paths.len()]);
+        for (i, path) in paths.iter().enumerate() {
+            for pos in path {
+                to_ret.fills[*pos].color = palette[i];
+            }
+        }
+        to_ret
+    }
+    fn to_dirs_grid(&self) -> Vec<FlowDir> {
+        self.fills.iter().map(|fill| fill.dirs).collect()
+    }
     fn get_paths(dirs_grid: &[FlowDir], width: usize, height: usize) -> Vec<Vec<usize>> {
-        // NOTE: this is no longer in sorted order, so we have to think about that
-        // TODO: fix this function so it works pretty please :)
+        // TODO: make this work for non-full boards
+        // TODO: this is not right :anguish:
         let mut paths: Vec<Vec<usize>> = Vec::new();
         let mut checked = bitvec![0; (width*height)];
         while checked.count_zeros() != 0 {
-            let mut to_visit = vec![checked.leading_ones()];
+            let first_unchecked = checked
+                .iter()
+                .enumerate()
+                .filter(|(i, val)| !(**val) && dirs_grid[*i].num_connections() == 1)
+                .map(|(i, _)| i)
+                .next()
+                .unwrap_or_else(|| checked.leading_ones());
+
+            if dirs_grid[first_unchecked] == FlowDir::Detached {
+                checked.set(first_unchecked, true);
+                continue;
+            }
+
+            let mut to_visit = vec![first_unchecked];
             let mut intermediate: Vec<usize> = Vec::new();
             while let Some(pos) = to_visit.pop() {
                 if checked[pos] {
@@ -473,13 +528,10 @@ impl Board {
                 checked.set(pos, true);
                 intermediate.push(pos);
                 let flow_dir = dirs_grid[pos];
-                for dir in FlowDir::NBR_DIRS {
-                    if let Some(nbr) = dir.nbr_of(pos, width, height) {
-                        if flow_dir.is_connected(dir) && !checked[nbr] {
-                            to_visit.push(nbr);
-                        }
-                    }
-                }
+                to_visit.extend(FlowDir::NBR_DIRS.iter().filter_map(|dir| {
+                    dir.nbr_of(pos, width, height)
+                        .filter(|nbr| flow_dir.is_connected(*dir) && !checked[*nbr])
+                }));
             }
             paths.push(intermediate)
         }
@@ -503,7 +555,7 @@ impl Board {
             }
             // log("loop found!");
             // because it's a dfs on a loop, the elements must be in order
-            let path_start = (0, 1);
+            let path_start = (path.len() - 1, 0);
             let path_middle = (path.len() / 2, path.len() / 2 + 1);
             for pair in [path_start, path_middle] {
                 let break_0_a = path[pair.0];
@@ -521,21 +573,109 @@ impl Board {
         // log("entered path fixer");
         'outer: for _num_iters in 0.. {
             for path in &mut *paths {
-                let mut val = path.iter().enumerate().filter(|(_, pos)| {
+                let self_intersect_pos = path.iter().find(|pos| {
                     FlowDir::NBR_DIRS.iter().any(|dir| {
-                        !dirs_grid[**pos].is_connected(*dir)
-                            && dir
-                                .nbr_of(**pos, width, height)
-                                .is_some_and(|nbr| path.contains(&nbr))
+                        dir.nbr_of(**pos, width, height)
+                            .filter(|_| !dirs_grid[**pos].is_connected(*dir))
+                            .is_some_and(|nbr| path.contains(&nbr))
                     })
                 });
-                if val.next().is_some() {
-                    // log("found a loop");
-                    let start = *path
+                if let Some(_self_intersect_pos) = self_intersect_pos {
+                    // log(&format!(
+                    //     "found a self-intersect with path {path:?} at position {}",
+                    //     self_intersect_pos
+                    // ));
+                    // paths MUST be in sorted order :)
+                    let break_pos = path.len() / 2;
+                    let break_start = path[break_pos - 1];
+                    let break_end = path[break_pos];
+                    let dir_connected_in =
+                        FlowDir::change_dir(break_start, break_end, width).unwrap();
+                    dirs_grid[break_start] =
+                        dirs_grid[break_start].remove_connection(dir_connected_in);
+                    dirs_grid[break_end] =
+                        dirs_grid[break_end].remove_connection(dir_connected_in.rev());
+                    created_paths.push(path.split_off(break_pos));
+                    continue 'outer;
+                }
+            }
+            if !created_paths.is_empty() {
+                paths.append(&mut created_paths);
+                continue 'outer;
+            }
+            break;
+        }
+
+        // log("exited loop/intersect");
+    }
+    fn join_adjacent_paths(
+        dirs_grid: &mut [FlowDir],
+        paths: &mut Vec<Vec<usize>>,
+        width: usize,
+        height: usize,
+    ) {
+        let mut bitvec_path_b_set = bitvec![0; width*height];
+        for i_a in 0..paths.len() {
+            for i_b in 0..paths.len() {
+                let path_a = &paths[i_a];
+                let path_b = &paths[i_b];
+                if path_a.len() < 2 || path_b.len() < 2 {
+                    continue;
+                }
+                let mut pair = None;
+                for a in [path_a[0], *path_a.last().unwrap()] {
+                    for b in [path_b[0], *path_b.last().unwrap()] {
+                        if is_nbr(a, b, width) {
+                            pair = Some((a, b));
+                        }
+                    }
+                }
+                let Some((a, b)) = pair else {
+                    continue;
+                };
+                assert_eq!(
+                    dirs_grid[a].num_connections(),
+                    1,
+                    "A must have one connection"
+                );
+                assert_eq!(
+                    dirs_grid[b].num_connections(),
+                    1,
+                    "B must have one connection"
+                );
+                // log(&format!("trying with {a}, {b}"));
+                // empty out the set
+                bitvec_path_b_set.set_elements(0);
+                for i in path_b.iter().copied() {
+                    bitvec_path_b_set.set(i, true);
+                }
+                if !path_a.iter().copied().any(|idx| {
+                    FlowDir::NBR_DIRS
                         .iter()
-                        .find(|pos| dirs_grid[**pos].num_connections() == 1)
-                        .unwrap();
-                    let mut queue = vec![start];
+                        .copied()
+                        .flat_map(|dir| {
+                            dir.nbr_of(idx, width, height)
+                                .filter(|_| !dirs_grid[idx].is_connected(dir))
+                        })
+                        .any(|val| !(idx == a && val == b) && bitvec_path_b_set[val])
+                }) {
+                    let dir = FlowDir::change_dir(a, b, width)
+                        .expect("a and b must be adjacent to be nbrs");
+                    dirs_grid[a] = dirs_grid[a]
+                        .try_connect(dir)
+                        .expect("change direction/connection should be checked (a)");
+                    dirs_grid[b] = dirs_grid[b]
+                        .try_connect(dir.rev())
+                        .expect("change direction/connection should be checked (b)");
+                    let one_end = path_a[if path_a[0] == a { path_a.len() - 1 } else { 0 }];
+                    assert_eq!(
+                        dirs_grid[one_end].num_connections(),
+                        1,
+                        "board: {:?}, path: {:?}",
+                        Self::from_dirs_grid(dirs_grid, width, height).write_board(),
+                        path_a
+                    );
+                    let mut queue = vec![one_end];
                     let mut visited = bitvec![0; dirs_grid.len()];
                     loop {
                         let pos = *queue.last().unwrap();
@@ -543,48 +683,23 @@ impl Board {
                         let next = FlowDir::NBR_DIRS
                             .iter()
                             .filter_map(|dir| {
-                                if dirs_grid[pos].is_connected(*dir) {
-                                    dir.nbr_of(pos, width, height).and_then(|val| {
-                                        match visited[val] {
-                                            true => None,
-                                            false => Some(val),
-                                        }
-                                    })
-                                } else {
-                                    None
-                                }
+                                dir.nbr_of(pos, width, height)
+                                    .filter(|_| dirs_grid[pos].is_connected(*dir))
+                                    .filter(|val| !visited[*val])
                             })
                             .next();
-                        if next.is_none() {
+                        let Some(next) = next else {
                             break;
-                        }
-                        let next = next.unwrap();
+                        };
                         queue.push(next);
                     }
-                    let break_pos = queue.len() / 2;
-                    let break_start = queue[break_pos - 1];
-                    let break_end = queue[break_pos];
-
-                    let dir_connected_in =
-                        FlowDir::change_dir(break_start, break_end, width).unwrap();
-                    dirs_grid[break_start] =
-                        dirs_grid[break_start].remove_connection(dir_connected_in);
-                    dirs_grid[break_end] =
-                        dirs_grid[break_end].remove_connection(dir_connected_in.rev());
-
-                    let new_vec = queue.split_off(break_pos);
-                    path.clear();
-                    path.append(&mut queue);
-                    created_paths.push(new_vec);
-                    continue 'outer;
+                    paths[i_a] = std::mem::take(&mut queue);
+                    paths[i_b].clear();
                 }
             }
-            break;
         }
-        paths.append(&mut created_paths);
-        // log("exited loop/intersect");
+        paths.retain(|val| !val.is_empty());
     }
-
     pub fn gen_filled_board(width: usize, height: usize, rng: &mut impl Rng) -> Self {
         // 0: left, 1: right, 2: up, 3: down, 4: left-right, 5: left-up,
         // 6: left-down, 7: right-up, 8: right-down, 9: up-down, 10: unconnected
@@ -594,8 +709,9 @@ impl Board {
         let mut dirs_dirty = Self::wfc_gen_dirty(width, height, rng);
 
         let mut paths = Self::get_paths(&dirs_dirty, width, height);
+        // log(&format!("{:?}", paths));
         Self::split_loops_and_intersects(&mut dirs_dirty, &mut paths, width, height);
-        // TODO: join trivially filled boards
+        Self::join_adjacent_paths(&mut dirs_dirty, &mut paths, width, height);
         for (i, &dir) in dirs_dirty.iter().enumerate() {
             board.fills[i] = Fill::new(0xfff, dir.flow_type(), dir)
         }
@@ -610,19 +726,68 @@ impl Board {
 
         board
     }
-    fn verify_valid(&self) -> bool {
-        // TODO: implement logic, make an error type, potentially do error correction for basic errors
-        // no more than 2 dots of the same color
-        // no connections which aren't a pair
-        // no connections to a different color
-        // no loops
-        // no paths that are next to themselves
-        // no flows that aren't connected to a dot
+    pub fn verify_valid(&self) -> Result<(), InvalidBoardError> {
+        let as_grid = self.to_dirs_grid();
+        let paths = Self::get_paths(&as_grid, self.width, self.height);
+        for path in paths.iter() {
+            let dot_pos = path.iter().any(|pos| self.fills[*pos].flow == Flow::Dot);
+            let crosses_self = path.iter().copied().any(|idx| {
+                FlowDir::NBR_DIRS
+                    .iter()
+                    .copied()
+                    .filter_map(|dir| {
+                        dir.nbr_of(idx, self.width, self.height)
+                            .filter(|_| !as_grid[idx].is_connected(dir))
+                    })
+                    .any(|val| path.contains(&val))
+            });
+            if !dot_pos {
+                let has_unlinked_connection = path
+                    .iter()
+                    .any(|pos| self.fills[*pos].dirs.num_connections() != 2);
+                return match has_unlinked_connection {
+                    false => Err(InvalidBoardError::Loop),
+                    true => Err(InvalidBoardError::DisconnectedFlow),
+                };
+            }
+            if crosses_self {
+                return Err(InvalidBoardError::SelfAdjacentPath);
+            }
+        }
+        let mut colors_map: HashMap<u16, usize> = HashMap::new();
+        for (idx, fill) in self.fills.iter().enumerate() {
+            if let Some(error) = FlowDir::NBR_DIRS
+                .iter()
+                .copied()
+                .filter_map(|dir| {
+                    dir.nbr_of(idx, self.width, self.height)
+                        .filter(|_| as_grid[idx].is_connected(dir))
+                        .and_then(|nbr| {
+                            if self.fills[idx].color != self.fills[nbr].color {
+                                Some(InvalidBoardError::DifferentColorConnection)
+                            } else if !self.fills[nbr].dirs.is_connected(dir.rev()) {
+                                Some(InvalidBoardError::UnmatchedConnection)
+                            } else {
+                                None
+                            }
+                        })
+                })
+                .next()
+            {
+                return Err(error);
+            }
 
-        todo!()
+            if fill.flow == Flow::Dot {
+                *colors_map.entry(fill.color).or_insert(0) += 1;
+            }
+        }
+        if colors_map.iter().any(|(_k, v)| *v != 2) {
+            return Err(InvalidBoardError::UnpairedDots);
+        }
+        return Ok(());
     }
-    pub fn get_fill(&self, x: usize, y: usize) -> Fill {
-        self.fills[y * self.width + x]
+    pub fn get_fill(&self, x: usize, y: usize) -> &Fill {
+        &self.fills[y * self.width + x]
     }
 
     pub fn set_fill(&mut self, x: usize, y: usize, fill: Fill) {
@@ -635,48 +800,38 @@ impl Board {
             && (pos_a / self.width).abs_diff(pos_b / self.width) <= 1
     }
 
-    fn flood_search(&self, pos: usize) -> (BitVec, usize) {
-        // traverse from a starting dot, returning when another dot is reached or the path runs out
-        let mut explored = bitvec![0; (self.width * self.height)]; //vec![false; (self.width * self.height) as usize];
-        match self.fills[pos].flow {
-            Flow::Dot => (),
-            _ => {
-                return (explored, pos);
-            }
-        };
+    /// Traverse from a starting pos, returning when `break_condition(pos)` returns true or the path runs out.
+    /// Note that this now allows non-dot starting places, but the traversal does not guarantee a particular direction
+    fn flood_search(&self, pos: usize, break_condition: impl Fn(usize) -> bool) -> (BitVec, usize) {
+        let mut explored = bitvec![0; (self.width * self.height)];
         let start_color = self.fills[pos].color;
 
-        let mut to_explore: Vec<usize> = Vec::new();
+        let mut to_explore: Vec<usize> = vec![pos];
         let mut last_entry = pos;
-        to_explore.push(pos);
         while let Some(entry) = to_explore.pop() {
             if explored[entry] {
-                continue;
+                panic!("entry was previously explored; should have been checked before pushing as option");
             }
             explored.set(entry, true);
             last_entry = entry;
-            if entry != pos {
-                if let Flow::Dot = self.fills[entry].flow {
-                    break;
-                }
+            if break_condition(entry) {
+                break;
             }
-            let this_fill = self.fills[entry];
+            let this_fill = &self.fills[entry];
             for nbr in FlowDir::NBR_DIRS.iter().copied() {
-                if !this_fill.dirs.is_connected(nbr) {
-                    continue;
-                }
                 let Some(new_pos) = nbr.nbr_of(entry, self.width, self.height) else {
                     continue;
                 };
-                if explored[new_pos] || start_color != self.fills[new_pos].color {
+                if !this_fill.dirs.is_connected(nbr)
+                    || !self.fills[new_pos].dirs.is_connected(nbr.rev())
+                    || explored[new_pos]
+                    || start_color != self.fills[new_pos].color
+                {
                     continue;
                 }
-                // already checked this_fill for connection
-                if !self.fills[new_pos].dirs.is_connected(nbr.rev()) {
-                    continue;
-                }
-
+                // we only want to traverse in one direction, so break
                 to_explore.push(new_pos);
+                break;
             }
         }
         (explored, last_entry)
@@ -685,8 +840,8 @@ impl Board {
         if !self.adjacent(pos_a, pos_b) {
             return false;
         }
-        let fill_a = self.fills[pos_a];
-        let fill_b = self.fills[pos_b];
+        let fill_a = &self.fills[pos_a];
+        let fill_b = &self.fills[pos_b];
         // precondition: A already is a line/dot
         if let Flow::Empty = fill_a.flow {
             return false;
@@ -739,8 +894,8 @@ impl Board {
         if !self.adjacent(pos_a, pos_b) {
             return false;
         }
-        let fill_a = self.fills[pos_a];
-        let fill_b = self.fills[pos_b];
+        let fill_a = &self.fills[pos_a];
+        let fill_b = &self.fills[pos_b];
         // precondition: A already is a line/dot
         if Flow::Empty == fill_a.flow || Flow::Empty == fill_b.flow || fill_a.color != fill_b.color
         {
@@ -793,9 +948,14 @@ impl Board {
 
     */
     pub fn clear_pipe(&mut self, pos: usize) {
-        let (visited, _) = self.flood_search(pos);
+        let (visited, _end) = self.flood_search(pos, |entry| {
+            entry != pos && self.fills[entry].flow == Flow::Dot
+        });
+        // log(&format!("ended at {end} from {pos}"));
+        // log(&format!("visited {visited:?}"));
         for (i, was_visited) in visited.iter().enumerate() {
             if *was_visited {
+                // log(&format!("removing {i}"));
                 if let Flow::Dot = self.fills[i].flow {
                     self.fills[i].dirs = FlowDir::Detached;
                 } else {
@@ -806,13 +966,14 @@ impl Board {
     }
 
     pub fn is_connected(&self, pos_a: usize, pos_b: usize) -> bool {
-        let (_, final_pos) = self.flood_search(pos_a);
+        let (_, final_pos) = self.flood_search(pos_a, |entry| {
+            entry != pos_a && self.fills[entry].flow == Flow::Dot
+        });
         pos_b == final_pos
     }
+
     pub fn is_attached_nbrs(&self, pos_a: usize, pos_b: usize) -> bool {
-        (pos_a % self.width).abs_diff(pos_b % self.width)
-            + (pos_a / self.width).abs_diff(pos_b / self.width)
-            == 1
+        is_nbr(pos_a, pos_b, self.width)
             && self.fills[pos_a]
                 .dirs
                 .is_connected(FlowDir::change_dir(pos_a, pos_b, self.width).unwrap())
@@ -918,12 +1079,14 @@ impl Board {
 #[wasm_bindgen]
 pub struct Canvas {
     board: Board,
+    solved_board: Option<Board>,
     pix_buf: Vec<u8>,
     rendered_flow_cache: HashMap<Fill, [u32; FLOW_SIZE * FLOW_SIZE]>,
     current_pos: Option<(usize, usize)>,
     is_mouse_down: bool,
     rng: Pcg,
 }
+
 impl Default for Canvas {
     fn default() -> Self {
         let mut rng = ENTROPY_SOURCE.lock().unwrap();
@@ -932,6 +1095,7 @@ impl Default for Canvas {
         Self {
             rng: Pcg::new(seed, stream),
             board: Default::default(),
+            solved_board: None,
             pix_buf: Default::default(),
             rendered_flow_cache: Default::default(),
             current_pos: Default::default(),
@@ -955,6 +1119,7 @@ impl Canvas {
     }
 
     pub fn new(width: usize, height: usize) -> Self {
+        console_error_panic_hook::set_once();
         let (width, height) = (width, height);
         let board = Board::new(width, height);
         let total_width = board.width * FLOW_SIZE + (board.width - 1) * BORDER_SIZE;
@@ -982,49 +1147,55 @@ impl Canvas {
             ..Default::default()
         }
     }
-    fn render_flow(&mut self, fill: Fill, board_x: usize, board_y: usize) {
-        self.rendered_flow_cache.entry(fill).or_insert_with(|| {
-            let mut prerendered = [0u32; FLOW_SIZE * FLOW_SIZE];
-            let sprite: &[u8; SPRITE_SIZE * SPRITE_SIZE] = match fill.flow {
-                Flow::Dot => match fill.dirs {
-                    FlowDir::Detached => include_bytes!("sprites/0"),
-                    FlowDir::Left => include_bytes!("sprites/1"),
-                    FlowDir::Right => include_bytes!("sprites/2"),
-                    FlowDir::Up => include_bytes!("sprites/3"),
-                    FlowDir::Down => include_bytes!("sprites/4"),
-                    invalid => panic!("Invalid flow {:?}", invalid),
-                },
-                Flow::Empty => include_bytes!("sprites/5"),
-                Flow::Line => match fill.dirs {
-                    FlowDir::Left => include_bytes!("sprites/6"),
-                    FlowDir::Right => include_bytes!("sprites/7"),
-                    FlowDir::Up => include_bytes!("sprites/8"),
-                    FlowDir::Down => include_bytes!("sprites/9"),
-                    FlowDir::RightUp => include_bytes!("sprites/10"),
-                    FlowDir::RightDown => include_bytes!("sprites/11"),
-                    FlowDir::LeftDown => include_bytes!("sprites/12"),
-                    FlowDir::LeftUp => include_bytes!("sprites/13"),
-                    FlowDir::UpDown => include_bytes!("sprites/14"),
-                    FlowDir::LeftRight => include_bytes!("sprites/15"),
-                    invalid => panic!("Invalid flow {:?}", invalid),
-                },
-            };
-            for y in 0..FLOW_SIZE {
-                for x in 0..FLOW_SIZE {
-                    let scale =
-                        sprite[y / SPRITE_SCALE * SPRITE_SIZE + x / SPRITE_SCALE] as f32 / 255.0;
+    fn render_flow(&mut self, fill: &Fill, board_x: usize, board_y: usize) {
+        self.rendered_flow_cache
+            .entry(fill.clone())
+            .or_insert_with(|| {
+                let mut prerendered = [0u32; FLOW_SIZE * FLOW_SIZE];
+                let sprite: &[u8; SPRITE_SIZE * SPRITE_SIZE] = match fill.flow {
+                    Flow::Dot => match fill.dirs {
+                        FlowDir::Detached => include_bytes!("sprites/0"),
+                        FlowDir::Left => include_bytes!("sprites/1"),
+                        FlowDir::Right => include_bytes!("sprites/2"),
+                        FlowDir::Up => include_bytes!("sprites/3"),
+                        FlowDir::Down => include_bytes!("sprites/4"),
+                        invalid => panic!("Invalid flow for dot: {:?}", invalid),
+                    },
+                    Flow::Empty => match fill.dirs {
+                        FlowDir::Detached => include_bytes!("sprites/5"),
+                        invalid => panic!("Invalid flow for empty: {:?}", invalid),
+                    },
+                    Flow::Line => match fill.dirs {
+                        FlowDir::Left => include_bytes!("sprites/6"),
+                        FlowDir::Right => include_bytes!("sprites/7"),
+                        FlowDir::Up => include_bytes!("sprites/8"),
+                        FlowDir::Down => include_bytes!("sprites/9"),
+                        FlowDir::RightUp => include_bytes!("sprites/10"),
+                        FlowDir::RightDown => include_bytes!("sprites/11"),
+                        FlowDir::LeftDown => include_bytes!("sprites/12"),
+                        FlowDir::LeftUp => include_bytes!("sprites/13"),
+                        FlowDir::UpDown => include_bytes!("sprites/14"),
+                        FlowDir::LeftRight => include_bytes!("sprites/15"),
+                        invalid => panic!("Invalid flow for line: {:?}", invalid),
+                    },
+                };
+                for y in 0..FLOW_SIZE {
+                    for x in 0..FLOW_SIZE {
+                        let scale = sprite[y / SPRITE_SCALE * SPRITE_SIZE + x / SPRITE_SCALE]
+                            as f32
+                            / 255.0;
 
-                    let pix_r = ((((fill.color >> 8) & 0xf) as f32 * scale) as u32) << 4;
-                    let pix_g = ((((fill.color >> 4) & 0xf) as f32 * scale) as u32) << 4;
-                    let pix_b = (((fill.color & 0xf) as f32 * scale) as u32) << 4;
+                        let pix_r = ((((fill.color >> 8) & 0xf) as f32 * scale) as u32) << 4;
+                        let pix_g = ((((fill.color >> 4) & 0xf) as f32 * scale) as u32) << 4;
+                        let pix_b = (((fill.color & 0xf) as f32 * scale) as u32) << 4;
 
-                    let color = pix_r << 24 | pix_g << 16 | pix_b << 8 | 0xff;
-                    prerendered[y * FLOW_SIZE + x] = color;
+                        let color = pix_r << 24 | pix_g << 16 | pix_b << 8 | 0xff;
+                        prerendered[y * FLOW_SIZE + x] = color;
+                    }
                 }
-            }
-            prerendered
-        });
-        let cached_render = self.rendered_flow_cache[&fill];
+                prerendered
+            });
+        let cached_render = self.rendered_flow_cache[fill];
         // let cached_render = [0xff0000ff; FLOW_SIZE * FLOW_SIZE];
         let start_x = board_x * (FLOW_SIZE + BORDER_SIZE);
         let start_y = board_y * (FLOW_SIZE + BORDER_SIZE);
@@ -1039,8 +1210,8 @@ impl Canvas {
     pub fn render(&mut self) {
         for y in 0..self.board.height {
             for x in 0..self.board.width {
-                let fill = self.board.fills[y * self.board.width + x];
-                self.render_flow(fill, x, y);
+                let fill = self.board.fills[y * self.board.width + x].clone();
+                self.render_flow(&fill, x, y);
             }
         }
     }
@@ -1089,7 +1260,7 @@ impl Canvas {
         };
 
         let fill_pos = x + y * self.board.width;
-        match self.board.get_fill(x, y).flow {
+        match self.board.fills[fill_pos].flow {
             Flow::Dot => {
                 self.board.clear_pipe(fill_pos);
                 self.current_pos = Some((x, y));
@@ -1143,13 +1314,17 @@ impl Canvas {
                 }
             }
         };
+        // avoid attempting to connect when other index is out of bounds
+        if current_x.abs_diff(x) > 1 || current_y.abs_diff(y) > 1 {
+            return;
+        }
         let pos_a = current_x + current_y * self.board.width;
         let pos_b = x + y * self.board.width;
         if self.board.fills[pos_a].flow != Flow::Empty {
             // lazily evaluated, so either one or the other will happen
             let res = self.board.add_connection(pos_a, pos_b)
                 || self.board.remove_connection(pos_a, pos_b);
-            let fill_at_b = self.board.fills[pos_b];
+            let fill_at_b = &self.board.fills[pos_b];
             let at_max_connections = match fill_at_b.flow {
                 Flow::Dot => fill_at_b.dirs.num_connections() == 1,
                 Flow::Line => fill_at_b.dirs.num_connections() == 2,
@@ -1184,7 +1359,7 @@ impl Canvas {
             // lazily evaluated, so either one or the other will happen
             let res = self.board.add_connection(pos_a, pos_b)
                 || self.board.remove_connection(pos_a, pos_b);
-            let fill_at_b = self.board.fills[pos_b];
+            let fill_at_b = &self.board.fills[pos_b];
             let at_max_connections = match fill_at_b.flow {
                 Flow::Dot => fill_at_b.dirs.num_connections() == 1,
                 Flow::Line => fill_at_b.dirs.num_connections() == 2,
@@ -1221,6 +1396,7 @@ impl Canvas {
     pub fn gen_filled_board(width: usize, height: usize) -> Self {
         let mut canvas = Canvas::new(width, height);
         canvas.board = Board::gen_filled_board(width, height, &mut canvas.rng);
+        canvas.solved_board = Some(canvas.board.clone());
         canvas
     }
 
@@ -1263,15 +1439,165 @@ impl Canvas {
 
         self.read_board(board);
     }
+    pub fn hint(&mut self) {
+        // TODO: fix the utterly awful mess that is this function
+        if let Some(ref mut solved_board) = self.solved_board {
+            // fix all incorrect squares
+            for fill_pos in 0..solved_board.fills.len() {
+                let unsolved = &self.board.fills[fill_pos];
+                if unsolved.flow == Flow::Dot {
+                    // log(&format!("called at dot pos {fill_pos}"));
+                    let (_, end) = self.board.flood_search(fill_pos, |entry| {
+                        self.board.fills[entry] != solved_board.fills[entry]
+                    });
+                    let end_fill = &self.board.fills[end];
+                    let end_fill_solved = &solved_board.fills[end];
+                    if end_fill.color != end_fill_solved.color
+                        || match end_fill.dirs.num_connections() {
+                            1 => !end_fill_solved.dirs.is_connected(end_fill.dirs),
+                            2 => end_fill_solved.dirs != end_fill.dirs,
+                            _ => false,
+                        }
+                    {
+                        // TODO: discriminate incorrect vs funky
+                        // log(&format!("chose to clear pipe at position {fill_pos}"));
+                        self.board.clear_pipe(fill_pos);
+                        if self.current_pos.is_some() {
+                            self.current_pos =
+                                Some((fill_pos % self.board.width, fill_pos % self.board.width));
+                        }
+                    }
+                }
+                /*
+                match unsolved.flow {
+                    Flow::Empty => (),
+                    Flow::Dot => {
+                        // TODO: fix this
+                        // it currently doesn't check that the whole path is correct
 
+                        if solved_board.fills[end].flow != Flow::Dot {
+                            // TODO: make this clear less vehemently?
+                        }
+                    }
+                    Flow::Line => {
+                        if unsolved.dirs.num_connections() == 1 {
+                            let (mut whole_path, dot_end) =
+                                self.board.flood_search(fill_pos, |entry| {
+                                    entry != fill_pos && self.board.fills[entry].flow == Flow::Dot
+                                });
+
+                            if self.board.fills[dot_end].flow == Flow::Dot {
+                                // TODO: this seems incorrect... fix?
+
+                                let (correct_positions, end_incorrect) =
+                                    self.board.flood_search(dot_end, |entry| {
+                                        self.board.fills[entry] != solved_board.fills[entry]
+                                    });
+                                // TODO: fix meeee
+                                let incorrect_dirs = self.board.fills[end_incorrect].dirs;
+                                let correct_dirs = solved_board.fills[end_incorrect].dirs;
+                                if incorrect_dirs != correct_dirs
+                                    && !(incorrect_dirs.num_connections() == 1
+                                        && correct_dirs.is_connected(incorrect_dirs))
+                                {
+                                    // TODO: what the heck is happening with this entire block of code?
+                                    // the path is actually incorrect, we didn't just hit the end
+
+                                    // store only incorrect positions as true in whole_path
+                                    whole_path ^= &correct_positions;
+                                    whole_path.set(end_incorrect, true);
+                                    let last_correct =
+                                        FlowDir::NBR_DIRS
+                                            .iter()
+                                            .flat_map(|dir| {
+                                                dir.nbr_of(
+                                                    end_incorrect,
+                                                    self.board.width,
+                                                    self.board.height,
+                                                )
+                                                .filter(|nbr| {
+                                                    self.board.fills[*nbr]
+                                                        .dirs
+                                                        .is_connected(dir.rev())
+                                                })
+                                            })
+                                            .find(|nbr| correct_positions[*nbr])
+                                            .expect("must have had a nbr to reach during search");
+                                    let change_dir = FlowDir::change_dir(
+                                        last_correct,
+                                        end_incorrect,
+                                        self.board.width,
+                                    )
+                                    .expect("must be nbrs because of search");
+
+                                    self.board.fills[last_correct].dirs = self.board.fills
+                                        [last_correct]
+                                        .dirs
+                                        .remove_connection(change_dir);
+                                    for (i, val) in whole_path.iter().enumerate() {
+                                        if *val {
+                                            self.board.fills[i] = Default::default();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };*/
+            }
+            // since everything is correct, we can definitely add one connection
+
+            let Some(free) = self
+                .current_pos
+                .and_then(|(x, y)| Some(x + y * self.board.width))
+                .filter(|pos| {
+                    let fill = &self.board.fills[*pos];
+                    let threshold = match fill.flow {
+                        Flow::Dot => 0,
+                        Flow::Line => 1,
+                        Flow::Empty => 999, // impossible, so this should never get called
+                    };
+                    fill.dirs.num_connections() == threshold
+                })
+                .or_else(|| {
+                    (0..self.board.fills.len())
+                        .filter(|i| {
+                            self.board.fills[*i].color == solved_board.fills[*i].color
+                                && solved_board.fills[*i].dirs.num_connections()
+                                    - self.board.fills[*i].dirs.num_connections()
+                                    == 1
+                        })
+                        .choose(&mut self.rng)
+                })
+            else {
+                return;
+            };
+            let nbr_dir = solved_board.fills[free]
+                .dirs
+                .remove_connection(self.board.fills[free].dirs);
+            let nbr = nbr_dir
+                .nbr_of(free, self.board.width, self.board.height)
+                .expect("guaranteed to have a neighbor");
+            let old_dirs = self.board.fills[nbr].dirs;
+            self.board.fills[nbr] = solved_board.fills[nbr].clone();
+            self.board.fills[nbr].dirs = old_dirs
+                .try_connect(nbr_dir.rev())
+                .expect("should not be attached already (nbr)");
+            self.board.fills[free].dirs = self.board.fills[free]
+                .dirs
+                .try_connect(nbr_dir)
+                .expect("should not be attached already");
+            if Some((free % self.board.width, free / self.board.width)) == self.current_pos {
+                self.current_pos = Some((nbr % self.board.width, nbr / self.board.width));
+            }
+        }
+    }
     pub fn resize(&mut self, width: usize, height: usize) {
         if self.board.width == width && self.board.height == height {
             return;
         }
         let new_canvas = Canvas::new(width, height);
-        self.board = new_canvas.board;
-        self.pix_buf = new_canvas.pix_buf;
-        self.rendered_flow_cache.clear();
+        *self = new_canvas;
     }
 
     pub fn add_dot_at(&mut self, x: usize, y: usize, color: u16) {
