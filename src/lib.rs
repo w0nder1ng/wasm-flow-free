@@ -656,7 +656,7 @@ impl Board {
                     FlowDir::NBR_DIRS
                         .iter()
                         .copied()
-                        .flat_map(|dir| {
+                        .filter_map(|dir| {
                             dir.nbr_of(idx, width, height)
                                 .filter(|_| !dirs_grid[idx].is_connected(dir))
                         })
@@ -1479,7 +1479,6 @@ impl Canvas {
                         }
                     {
                         // TODO: discriminate incorrect vs funky
-                        // log(&format!("chose to clear pipe at position {fill_pos}"));
                         self.board.clear_pipe(fill_pos);
                         if self.current_pos.is_some() {
                             self.current_pos =
@@ -1487,82 +1486,6 @@ impl Canvas {
                         }
                     }
                 }
-                /*
-                match unsolved.flow {
-                    Flow::Empty => (),
-                    Flow::Dot => {
-                        // TODO: fix this
-                        // it currently doesn't check that the whole path is correct
-
-                        if solved_board.fills[end].flow != Flow::Dot {
-                            // TODO: make this clear less vehemently?
-                        }
-                    }
-                    Flow::Line => {
-                        if unsolved.dirs.num_connections() == 1 {
-                            let (mut whole_path, dot_end) =
-                                self.board.flood_search(fill_pos, |entry| {
-                                    entry != fill_pos && self.board.fills[entry].flow == Flow::Dot
-                                });
-
-                            if self.board.fills[dot_end].flow == Flow::Dot {
-                                // TODO: this seems incorrect... fix?
-
-                                let (correct_positions, end_incorrect) =
-                                    self.board.flood_search(dot_end, |entry| {
-                                        self.board.fills[entry] != solved_board.fills[entry]
-                                    });
-                                // TODO: fix meeee
-                                let incorrect_dirs = self.board.fills[end_incorrect].dirs;
-                                let correct_dirs = solved_board.fills[end_incorrect].dirs;
-                                if incorrect_dirs != correct_dirs
-                                    && !(incorrect_dirs.num_connections() == 1
-                                        && correct_dirs.is_connected(incorrect_dirs))
-                                {
-                                    // TODO: what the heck is happening with this entire block of code?
-                                    // the path is actually incorrect, we didn't just hit the end
-
-                                    // store only incorrect positions as true in whole_path
-                                    whole_path ^= &correct_positions;
-                                    whole_path.set(end_incorrect, true);
-                                    let last_correct =
-                                        FlowDir::NBR_DIRS
-                                            .iter()
-                                            .flat_map(|dir| {
-                                                dir.nbr_of(
-                                                    end_incorrect,
-                                                    self.board.width,
-                                                    self.board.height,
-                                                )
-                                                .filter(|nbr| {
-                                                    self.board.fills[*nbr]
-                                                        .dirs
-                                                        .is_connected(dir.rev())
-                                                })
-                                            })
-                                            .find(|nbr| correct_positions[*nbr])
-                                            .expect("must have had a nbr to reach during search");
-                                    let change_dir = FlowDir::change_dir(
-                                        last_correct,
-                                        end_incorrect,
-                                        self.board.width,
-                                    )
-                                    .expect("must be nbrs because of search");
-
-                                    self.board.fills[last_correct].dirs = self.board.fills
-                                        [last_correct]
-                                        .dirs
-                                        .remove_connection(change_dir);
-                                    for (i, val) in whole_path.iter().enumerate() {
-                                        if *val {
-                                            self.board.fills[i] = Default::default();
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                };*/
             }
             // since everything is correct, we can definitely add one connection
 
