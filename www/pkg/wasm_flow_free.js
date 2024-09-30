@@ -320,6 +320,18 @@ export class Canvas {
         return Canvas.__wrap(ret);
     }
     /**
+    */
+    clear_board() {
+        wasm.canvas_clear_board(this.__wbg_ptr);
+    }
+    /**
+    * @returns {Canvas}
+    */
+    get_cloned() {
+        const ret = wasm.canvas_get_cloned(this.__wbg_ptr);
+        return Canvas.__wrap(ret);
+    }
+    /**
     * @param {number} width
     * @param {number} height
     * @returns {Canvas}

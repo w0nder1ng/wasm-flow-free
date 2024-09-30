@@ -1,4 +1,4 @@
-from sys import argv
+import argparse
 
 import numpy as np
 from PIL import Image
@@ -28,12 +28,16 @@ def sprite_sheet_to_arr(file_path, sprite_size, sprite_count=None):
 
 
 def main():
-    file_path = argv[1]
-    sprite_size = map(int, argv[2].split("x"))
-    num_sprites = int(argv[3])
-    sprites = sprite_sheet_to_arr(file_path, sprite_size, num_sprites)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("file_path", type=argparse.FileType("rb"))
+    parser.add_argument("-s", "--sprite-size", type=int, required=True)
+    parser.add_argument("-n", "--num-sprites", type=int, required=True)
+    args = parser.parse_args()
+    sprite_size = (args.sprite_size, args.sprite_size)
+    sprites = sprite_sheet_to_arr(args.file_path, sprite_size, args.num_sprites)
     for i, sprite in enumerate(sprites):
-        if i >= num_sprites:
+        if i >= args.num_sprites:
+            print("overshot number of sprites")
             break
         with open(f"src/sprites/{i}", "wb") as f:
             f.write(bytearray(sprite))

@@ -75,6 +75,13 @@ export class Canvas {
 */
   static gen_filled_board(width: number, height: number): Canvas;
 /**
+*/
+  clear_board(): void;
+/**
+* @returns {Canvas}
+*/
+  get_cloned(): Canvas;
+/**
 * @param {number} width
 * @param {number} height
 * @returns {Canvas}
@@ -133,6 +140,8 @@ export interface InitOutput {
   readonly canvas_game_won: (a: number) => number;
   readonly canvas_read_board: (a: number, b: number, c: number) => void;
   readonly canvas_gen_filled_board: (a: number, b: number) => number;
+  readonly canvas_clear_board: (a: number) => void;
+  readonly canvas_get_cloned: (a: number) => number;
   readonly canvas_gen_new_board: (a: number, b: number) => number;
   readonly canvas_to_bytes: (a: number, b: number) => void;
   readonly canvas_from_bytes: (a: number, b: number, c: number) => void;

@@ -17,6 +17,8 @@ export function canvas_check_all_connected(a: number): number;
 export function canvas_game_won(a: number): number;
 export function canvas_read_board(a: number, b: number, c: number): void;
 export function canvas_gen_filled_board(a: number, b: number): number;
+export function canvas_clear_board(a: number): void;
+export function canvas_get_cloned(a: number): number;
 export function canvas_gen_new_board(a: number, b: number): number;
 export function canvas_to_bytes(a: number, b: number): void;
 export function canvas_from_bytes(a: number, b: number, c: number): void;
