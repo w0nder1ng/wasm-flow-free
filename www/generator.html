@@ -146,50 +146,15 @@
         draw.width = canvas.canvas_width();
         draw.height = canvas.canvas_height();
         canvas.render();
-
-        function mdHandler(e) {
-            e.preventDefault();
-            let rect = draw.getBoundingClientRect();
-            let x = (e.touches ? e.touches[0] : e).clientX - rect.left;
-            let y = (e.touches ? e.touches[0] : e).clientY - rect.top;
-            canvas.handle_md([x, y]);
-        }
-        function muHandler(e) {
-            canvas.handle_mu();
-        }
-        function mmHandler(e) {
-            let clientX = e.touches ? e.touches[0].clientX : e.clientX;
-            let clientY = e.touches ? e.touches[0].clientY : e.clientY;
-            canvas.handle_mm([
-                clientX - draw.getBoundingClientRect().left,
-                clientY - draw.getBoundingClientRect().top,
-            ]);
-            e.preventDefault();
-        }
-
-        draw.addEventListener("mousedown", mdHandler);
-        draw.addEventListener("mouseup", muHandler);
-        draw.addEventListener("mousemove", mmHandler);
-
-        draw.addEventListener("touchstart", mdHandler);
-
-        draw.addEventListener("touchend", muHandler);
-
-        draw.addEventListener("touchmove", mmHandler);
-
-        window.addEventListener("keydown", function (e) {
-            let key = e.key;
-            if ("wasd".indexOf(key) > -1) {
-                canvas.handle_keypress(key);
-                e.preventDefault();
-            }
-        });
-        copy_button.addEventListener("click", async function () {
-            let params = new URLSearchParams();
+        function cleared_board() {
             let canvas_copy = canvas.get_cloned();
             canvas_copy.clear_board();
-            let board = canvas_copy.to_bytes();
+            return canvas_copy.to_bytes();
+        }
+        copy_button.addEventListener("click", async function () {
+            let params = new URLSearchParams();
 
+            let board = cleared_board();
             let b64 = bytesToBase64(board);
             params.set("board", b64);
             params.set("width", grid_width);
@@ -202,7 +167,7 @@
             );
         });
         save_button.addEventListener("click", function () {
-            let board = canvas.to_bytes();
+            let board = cleared_board();
             saveByteArray(`${grid_width}x${grid_height}.ffsave`, board);
         });
         function update_wh_and_resize(event) {
